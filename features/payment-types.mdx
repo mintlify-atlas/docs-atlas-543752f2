@@ -6,7 +6,7 @@ description: "SIMAP Digital supports six payment types: mensual, diario, parcial
 
 ## Overview
 
-SIMAP Digital's payment engine (`pagosService.js`) supports six distinct payment types, all routed through the single entry-point function `registrarPago(userId, opciones)`. Every type creates a record in the `pagos` table and a companion entry in `pendingSync`, and then calls `actualizarSaldo()` to keep the `saldos` ledger accurate — whether the device is online or not.
+SIMAP Digital's payment engine (`pagosService.js`) supports six distinct payment types, all routed through the single entry-point function `registrarPago(userId, { tipo, monto, mesesTarget, nota })`. Every type creates a record in the `pagos` table and a companion entry in `pendingSync`, and then calls `actualizarSaldo()` to keep the `saldos` ledger accurate — whether the device is online or not.
 
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: "Roles and Permissions in SIMAP Digital"
+title: "SIMAP Digital: Roles and Permissions for Rural Water Boards"
 sidebarTitle: "Roles & Permissions"
 description: "SIMAP Digital has five roles — admin, cobrador, minsa, cliente, and dev — each with strictly separate route access enforced by authService."
 ---
@@ -41,11 +41,11 @@ After a successful login, each role is redirected to its home route as defined i
 ```js
 // src/utils/constants.js
 export const ROLE_HOME = {
-  admin:    '/admin',
+  admin: '/admin',
   cobrador: '/cobros',
-  minsa:    '/reporte',
-  cliente:  '/historial',
-  dev:      '/admin',   // Shows only the Auditoría tab
+  minsa: '/reporte',
+  cliente: '/historial',
+  dev: '/admin', // Will show only Auditoría tab
 };
 ```
 
@@ -67,11 +67,11 @@ Route authorization is enforced by `isRouteAllowed(role, path)` in `src/services
 // src/services/authService.js
 export function isRouteAllowed(role, path) {
   const rules = {
-    admin:    ['/admin', '/puntos-admin'],
+    admin: ['/admin', '/puntos-admin'],
     cobrador: ['/cobros', '/jornales', '/gastos', '/comisiones', '/reporte', '/foro', '/chat', '/mapa'],
-    minsa:    ['/reporte'],
-    cliente:  ['/historial', '/foro', '/chat'],
-    dev:      ['/admin'],
+    minsa: ['/reporte'],
+    cliente: ['/historial', '/foro', '/chat'],
+    dev: ['/admin'],
   };
   const allowed = rules[role] || [];
   return allowed.some(r => path.startsWith(r));

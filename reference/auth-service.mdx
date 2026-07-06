@@ -1,6 +1,6 @@
 ---
 title: "authService: authentication and RBAC route guards"
-sidebarTitle: "authService"
+sidebarTitle: "Auth Service"
 description: "JavaScript module handling Supabase authentication, session management, role-based route access control, and user registration for SIMAP Digital."
 ---
 
@@ -19,7 +19,7 @@ description: "JavaScript module handling Supabase authentication, session manage
 </ResponseField>
 
 <ResponseField name="rol" type="string">
-  Role assigned to this user: `'admin'` | `'cobrador'` | `'minsa'` | `'cliente'` | `'dev'`. Falls back to `'cliente'` if no profile is found.
+  Role assigned to this user: `'admin'` | `'cobrador'` | `'minsa'` | `'cliente'` | `'dev'`. Falls back to `'cliente'` if no `profiles` row is found at login time. Note: the `on_auth_user_created` trigger inserts new profiles with `rol: 'user'` by default — administrators must update this to an application role before the user can log in successfully.
 </ResponseField>
 
 <ResponseField name="nombre" type="string">

@@ -1,10 +1,8 @@
 ---
-title: "Cloud sync: pushing offline data to Supabase in SIMAP"
+title: "Offline-first sync: pushing local data to Supabase in SIMAP"
 sidebarTitle: "Cloud Sync"
-description: "SIMAP Digital's pending-queue sync pattern stores records locally in IndexedDB and automatically uploads them to Supabase PostgreSQL when internet is available."
+description: "SIMAP Digital's offline-first model stores records in IndexedDB and uploads them to Supabase PostgreSQL automatically whenever internet becomes available."
 ---
-
-## Overview
 
 SIMAP Digital is built around a **write-local-first, sync-later** model. Every action a collector takes — registering a payment, logging a gasto, recording a jornal — is saved immediately to the browser's IndexedDB via Dexie.js. The app works identically with or without an internet connection. When connectivity is available, queued records are pushed to **Supabase PostgreSQL** in the background.
 
@@ -17,7 +15,7 @@ This architecture solves the core problem described in `docs/arquitectura.md`:
 ## The Sync Model
 
 ```
-Write to IndexedDB → Mark as pendiente → Detect online event → Push to Supabase → Mark as sincronizado
+Write to IndexedDB → Add to pendingSync → Detect online event → Push to Supabase → Remove from pendingSync
 ```
 
 All data writes go to the local store first. The remote Supabase database is the **backup and collaboration layer**, not the primary source of truth during field operations.
@@ -35,10 +33,10 @@ All data writes go to the local store first. The remote Supabase database is the
 
 ## The `pendingSync` Queue
 
-Every local write that needs to reach the cloud creates a `{ type, data, timestamp }` entry in the `pendingSync` store within IndexedDB. This acts as the outbox for all offline work:
+Every local write that needs to reach the cloud creates an entry in the `pendingSync` store within IndexedDB. This acts as the outbox for all offline work. The entry shape varies slightly by service:
 
 ```js
-// Example structure of a pendingSync entry
+// pagosService.js — payments use { type, data, timestamp }
 {
   type:      'pago',
   data: {
@@ -49,6 +47,13 @@ Every local write that needs to reach the cloud creates a `{ type, data, timesta
     estado:    'completado'
   },
   timestamp: '2026-03-15T10:32:00.000Z'
+}
+
+// gastosService.js and jornalesService.js use { type, payload, timestamp }
+{
+  type:      'ADD_GASTO',
+  payload:   { id: 'gst_...', monto: 45.50, desc: 'Tubería PVC', fecha: '...' },
+  timestamp: 1710499920000
 }
 ```
 
@@ -65,14 +70,14 @@ export function useOnline() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   useEffect(() => {
-    const handleOnline  = () => setIsOnline(true);
+    const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
 
-    window.addEventListener('online',  handleOnline);
+    window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
     return () => {
-      window.removeEventListener('online',  handleOnline);
+      window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
@@ -98,59 +103,31 @@ There is no manual "sync now" button required — the process is fully automatic
 
 ---
 
-## Sync Lifecycle
+## Upload Sync (Device → Cloud)
 
-<Steps>
-  <Step title="Collector records data offline">
-    A payment, expense, or jornal entry is saved to `db.pagos`, `db.gastos`, or `db.jornales` via Dexie. A corresponding entry is added to `pendingSync` with `estado: 'pendiente'`.
-  </Step>
-  <Step title="App detects network recovery">
-    The `useOnline` hook fires the `handleOnline` callback. The sync service is triggered automatically, provided a valid session token exists.
-  </Step>
-  <Step title="Read all pendingSync records">
-    `syncService.js` queries the full `pendingSync` table and iterates over each queued record in chronological order (`timestamp` ascending).
-  </Step>
-  <Step title="POST each record to Supabase REST API">
-    Each record is sent via `pushToSupabase()`. For payments, the payload maps local field names to Supabase column names:
+`syncService.js` exposes `pushToSupabase(pago)`, which maps a local payment record to Supabase column names and inserts it:
 
-    ```js
-    const { data, error } = await supabase.from('pagos').insert({
-      usuario_id: pago.usuarioId,
-      tipo:       pago.tipo,
-      mes_target: pago.mesTarget,
-      fecha:      pago.fecha,
-      estado:     pago.estado || 'completado'
-    });
-    ```
-  </Step>
-  <Step title="On success: delete from pendingSync">
-    If `error` is null, the record is removed from the local `pendingSync` store. The Supabase database is now the authoritative copy for that record.
-  </Step>
-  <Step title="On failure: keep for next attempt">
-    If the insert returns an error (network dropped mid-sync, Supabase timeout, etc.), the record stays in `pendingSync` untouched. It will be retried the next time sync triggers.
-  </Step>
-</Steps>
-
----
-
-## Sync Flow Diagram
-
-```mermaid
-graph LR
-    A[🗄️ IndexedDB\npendingSync queue] -->|online event fires| B{useOnline\nhook}
-    B -->|isOnline = true| C[syncService\nreads queue]
-    C -->|POST each record| D[☁️ Supabase\nREST API]
-    D -->|✅ 201 Created| E[Delete from\npendingSync]
-    D -->|❌ Error| F[Keep record\nRetry next sync]
-    E --> G[🟢 Synchronized]
-    F --> A
+```js
+// syncService.js — pushToSupabase()
+export async function pushToSupabase(pago) {
+  const { data, error } = await supabase.from('pagos').insert({
+    usuario_id: pago.usuarioId,
+    tipo:       pago.tipo,
+    mes_target: pago.mesTarget,
+    fecha:      pago.fecha,
+    estado:     pago.estado || 'completado'
+  });
+  return { success: !error, error };
+}
 ```
+
+If `error` is null the record can be removed from `pendingSync`. If the insert fails (network drop, Supabase timeout), the record stays in the queue and will be retried on the next sync trigger.
 
 ---
 
 ## Download Sync (Cloud → Device)
 
-`syncService.js` also supports pulling canonical data from Supabase down to the local cache via `syncFromSupabase()`. This runs on app load when online and populates the local tables with the latest server state:
+`syncService.js` also pulls canonical data from Supabase down to the local cache via `syncFromSupabase()`. This runs on app load when online and populates the local tables with the latest server state:
 
 ```js
 // syncService.js — syncFromSupabase()
@@ -171,16 +148,35 @@ Tables synced on download: `usuarios`, `pagos`, `saldos`, `gastos`.
 
 ---
 
+## Sync Flow Diagram
+
+```mermaid
+graph LR
+    A[🗄️ IndexedDB\npendingSync queue] -->|online event fires| B{useOnline\nhook}
+    B -->|isOnline = true| C[syncService\npushToSupabase]
+    C -->|POST each record| D[☁️ Supabase\nREST API]
+    D -->|✅ 201 Created| E[Delete from\npendingSync]
+    D -->|❌ Error| F[Keep record\nRetry next sync]
+    E --> G[🟢 Synchronized]
+    F --> A
+```
+
+---
+
 ## What Gets Synced
 
-| Data Type | Local Table | Supabase Table | Direction |
-|---|---|---|---|
-| Payments | `db.pagos` | `pagos` | Both |
-| Expenses | `db.gastos` | `gastos` | Both |
-| Work jornals | `db.jornales` | `jornales` | Push ↑ |
-| Forum posts | `db.foros` | `foros` | Push ↑ |
-| User registrations | `db.registeredUsers` | `usuarios` | Both |
-| Account balances | `db.saldos` | `saldos` | Both |
+| Data Type | Local Table | Supabase Table | pendingSync type | Direction |
+|---|---|---|---|---|
+| Payments | `db.pagos` | `pagos` | `pago` | Both ↕ |
+| Expenses | `db.gastos` | `gastos` | `ADD_GASTO` | Both ↕ |
+| Work jornals | `db.jornales` | `jornales` | `ADD_JORNAL` | Push ↑ |
+| Forum posts | `db.foro` | `foros` | `ADD_POST` | Push ↑ |
+| User data | `db.usuarios` | `usuarios` | — | Pull ↓ |
+| Account balances | `db.saldos` | `saldos` | — | Pull ↓ |
+
+<Note>
+Jornales, forum posts, and gastos are written to `pendingSync` locally but the current `syncFromSupabase()` download pass only fetches `usuarios`, `pagos`, `saldos`, and `gastos`. Jornals and forum posts are upload-only at this time.
+</Note>
 
 ---
 

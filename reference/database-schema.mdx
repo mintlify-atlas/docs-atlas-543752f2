@@ -132,16 +132,19 @@ Accepted values for `tipo` (defined in `src/utils/constants.js`):
 | `[usuarioId+mes]` | composite PK | Compound key: household ID + month string |
 | `usuarioId` | number | References `usuarios.id` |
 | `mes` | string | Month in `'YYYY-MM'` format |
-| `estado` | string | Payment status for this household/month pair |
+| `estado` | string | Payment state for this household/month record |
 
-Accepted values for `estado` (defined in `src/utils/constants.js`):
+Accepted values for `estado` (set by `pagosService` when writing saldo records):
 
-| Value | Label | Meaning |
-|-------|-------|---------|
-| `activo` | ✅ Al Día | Fully paid for the period |
-| `parcial` | 🟡 Parcial | Partially paid; outstanding balance remains |
-| `moroso` | ⚠️ Moroso | 1–2 consecutive months unpaid |
-| `corte` | 🔴 Corte | ≥ `mesesGraciaCorte` consecutive months unpaid; service cut-off |
+| Value | Meaning |
+|-------|---------|
+| `pendiente` | Month record has been initialised but no payment has been applied yet |
+| `parcial` | A partial payment has been applied; outstanding balance remains |
+| `pagado` | The full monthly quota has been received; month is settled |
+
+<Note>
+  These are the **saldo-record** states written directly by `pagosService`. They differ from the **user-level** status values (`activo`, `moroso`, `corte`) returned by `calcularEstado()`, which are derived by inspecting multiple saldo records across months and comparing against the grace-period threshold.
+</Note>
 
 #### `pendingSync` — Cloud sync queue
 
@@ -150,7 +153,7 @@ Accepted values for `estado` (defined in `src/utils/constants.js`):
 | `id` | auto-int PK | Queue entry identifier |
 | `type` | string | Operation type, e.g. `'pago'`, `'gasto'`, `'jornal'` |
 | `data` | object | Full serialised record to push to Supabase |
-| `timestamp` | number | `Date.now()` when the entry was enqueued |
+| `timestamp` | string | ISO 8601 timestamp (`new Date().toISOString()`) of when the entry was enqueued |
 
 #### `config` — System configuration
 

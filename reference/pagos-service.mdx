@@ -1,7 +1,7 @@
 ---
-title: "pagosService: payment registration and balance calculation API"
-sidebarTitle: "pagosService"
-description: "JavaScript module exposing functions to register payments, calculate resident status, retrieve debt totals, and manage the local Dexie saldo ledger."
+title: "pagosService: payments, balances, and status API"
+sidebarTitle: "Pagos Service"
+description: "JavaScript module that registers payments, calculates resident payment status, retrieves debt totals, and manages the local Dexie saldo ledger offline."
 ---
 
 `pagosService` is the core financial engine of SIMAP Digital. It writes payment records and saldo ledger entries directly to the local Dexie database, queues them in `pendingSync` for cloud upload, and maintains each resident's payment status — all without requiring network connectivity.

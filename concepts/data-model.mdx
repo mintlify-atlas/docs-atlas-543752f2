@@ -1,14 +1,14 @@
 ---
-title: "SIMAP Digital data model and IndexedDB schema"
+title: "SIMAP Digital Data Model and Full IndexedDB Table Reference"
 sidebarTitle: "Data Model"
-description: "SIMAP Digital persists data across 12 IndexedDB tables managed by Dexie.js, covering users, payments, balances, audit logs, and gamification."
+description: "SIMAP Digital persists data across 15 IndexedDB tables managed by Dexie.js, covering users, payments, balances, audit logs, and gamification."
 ---
 
 ## Overview
 
 All application data lives inside an **IndexedDB** database named `SIMAPDigital`, managed by [Dexie.js](https://dexie.org). This local database is the primary source of truth — every read and write goes through Dexie regardless of network status. Supabase (PostgreSQL) is a synchronization target, not the operational database.
 
-The schema has grown across **six versioned migrations**, each adding new tables as the product expanded from basic cobros to gamification, messaging, and notifications.
+The schema has grown across **six versioned migrations** adding a total of **15 tables**, each extending the schema as the product expanded from basic cobros to gamification, messaging, and notifications.
 
 ---
 

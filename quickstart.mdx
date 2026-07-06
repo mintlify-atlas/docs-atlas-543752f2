@@ -20,40 +20,18 @@ Before you begin, make sure you have the following installed:
   <Step title="Clone the repository">
     Clone the SIMAP Digital source and move into the project directory.
 
-    <CodeGroup>
-      ```bash npm
-      git clone https://github.com/AdriP-maker/JAAR_Antigravity.git
-      cd JAAR_Antigravity
-      ```
-
-      ```bash yarn
-      git clone https://github.com/AdriP-maker/JAAR_Antigravity.git
-      cd JAAR_Antigravity
-      ```
-
-      ```bash pnpm
-      git clone https://github.com/AdriP-maker/JAAR_Antigravity.git
-      cd JAAR_Antigravity
-      ```
-    </CodeGroup>
+    ```bash
+    git clone https://github.com/AdriP-maker/JAAR_Antigravity.git
+    cd JAAR_Antigravity
+    ```
   </Step>
 
   <Step title="Install dependencies">
     Install all runtime and development dependencies.
 
-    <CodeGroup>
-      ```bash npm
-      npm install
-      ```
-
-      ```bash yarn
-      yarn install
-      ```
-
-      ```bash pnpm
-      pnpm install
-      ```
-    </CodeGroup>
+    ```bash
+    npm install
+    ```
   </Step>
 
   <Step title="Create your environment file">
@@ -65,7 +43,7 @@ Before you begin, make sure you have the following installed:
 
     The `.env.example` file ships with the following variables:
 
-    ```bash .env.example
+    ```bash
     # App identity
     VITE_APP_NAME="SIMAP Digital Plataforma"
     VITE_APP_VERSION="1.0.0"
@@ -83,7 +61,7 @@ Before you begin, make sure you have the following installed:
   <Step title="Configure Supabase credentials">
     Open `.env` in your editor and replace the placeholder values with your real Supabase project credentials.
 
-    ```bash .env
+    ```bash
     VITE_SUPABASE_URL="https://your-project-ref.supabase.co"
     VITE_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
     ```
@@ -98,19 +76,9 @@ Before you begin, make sure you have the following installed:
   <Step title="Start the development server">
     Launch the Vite dev server. The browser opens automatically at `http://localhost:5173`.
 
-    <CodeGroup>
-      ```bash npm
-      npm run dev
-      ```
-
-      ```bash yarn
-      yarn dev
-      ```
-
-      ```bash pnpm
-      pnpm dev
-      ```
-    </CodeGroup>
+    ```bash
+    npm run dev
+    ```
 
     You should see output similar to:
 

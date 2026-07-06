@@ -128,14 +128,14 @@ The `ProtectedRoute` component in `App.jsx` wraps every authenticated route. If 
 ┌─────────────┬──────────────────────────────────────────────────────────┐
 │ Role        │ Permitted Routes                                         │
 ├─────────────┼──────────────────────────────────────────────────────────┤
-│ admin       │ /admin, /jornales, /gastos, /comisiones, /reporte,       │
-│             │ /foro, /puntos-admin, /chat, /mapa, /historial           │
+│ admin       │ /admin, /puntos-admin                                    │
 ├─────────────┼──────────────────────────────────────────────────────────┤
-│ cobrador    │ /cobros, /jornales, /gastos, /foro, /reporte, /mapa      │
+│ cobrador    │ /cobros, /jornales, /gastos, /comisiones, /reporte,      │
+│             │ /foro, /chat, /mapa                                      │
 ├─────────────┼──────────────────────────────────────────────────────────┤
 │ minsa       │ /reporte (read-only download only)                       │
 ├─────────────┼──────────────────────────────────────────────────────────┤
-│ cliente     │ /historial, /foro (read-only)                            │
+│ cliente     │ /historial, /foro, /chat                                 │
 ├─────────────┼──────────────────────────────────────────────────────────┤
 │ dev         │ /admin (audit log tab only — no financial data)          │
 └─────────────┴──────────────────────────────────────────────────────────┘

@@ -37,9 +37,7 @@ Points convert to Balboa discounts at a fixed rate:
 
 - **1 point = B/.0.01** (one centavo)
 - **Minimum redemption:** 10 points (= B/.0.10)
-- **Maximum discount per month:** B/.1.50
-
-These defaults are configurable by the administrator in ConfigPage (see [Admin configuration](#admin-configuration) below).
+- **Maximum discount per month:** 150 points (= B/.1.50)
 
 > **Important — commission integrity (RF-20):** The cobrador's commission is always calculated on the **full tariff**, not on the discounted amount after points are applied. A resident who redeems B/.1.50 in points off a B/.3.00 bill still generates the full B/.3.00 commission basis. This protects cobrador earnings while rewarding residents.
 
@@ -192,12 +190,12 @@ export async function obtenerSaldoPuntos(usuarioId) {
 
 ## Admin configuration
 
-The administrator can tune the entire incentive system from **ConfigPage** (`/puntos-admin`, accessible to the `admin` role). The relevant fields in the "Reglas de Fidelidad (Puntos)" card are:
+The administrator can tune the incentive system from **ConfigPage** (`/puntos-admin`, accessible to the `admin` role). The relevant fields in the "Reglas de Fidelidad (Puntos)" card are:
 
 | Config field | Default | Description |
 |---|---|---|
 | `puntosPorPagoPuntual` | 10 | Points granted for an on-time payment |
-| `puntosRequeridosDescuento` | 100 | Points threshold to unlock a redemption |
-| `descuentoGenerado` | B/.3.00 | Discount value generated when threshold is reached |
+| `puntosRequeridosDescuento` | 100 | Points threshold required to unlock a redemption |
+| `descuentoGenerado` | B/.3.00 | Balboa value of the discount applied when a resident redeems |
 
 Changes are persisted via `saveConfig()` to the local store and synced to Supabase when the device comes online. The ConfigPage validates that commission splits (`splitDevs + splitCobrador`) always equal exactly 1.0 (100%) before saving.

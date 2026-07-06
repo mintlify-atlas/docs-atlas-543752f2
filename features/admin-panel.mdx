@@ -1,10 +1,8 @@
 ---
 title: "Admin panel: user management and system configuration"
 sidebarTitle: "Admin Panel"
-description: "The admin panel lets administrators approve new residents, manage user accounts, review audit logs, configure payment rules, and set commission splits."
+description: "The admin panel lets administrators approve new residents, manage user accounts, review audit logs, and configure payment rules and commission splits."
 ---
-
-## Overview
 
 The Admin Panel (`/admin`) is the operational hub for system administrators. It provides full control over user lifecycles, system configuration, commission rules, gamification parameters, and a tamper-evident audit trail. A restricted view is also available to the `dev` role for technical support purposes.
 
@@ -96,13 +94,11 @@ Displays all entries from `db.auditoria`, ordered by `timestamp` descending. Eac
 
 ### System Configuration (ConfigPage — `/config`)
 
-Admins also manage the global system variables via `ConfigPage`, which reads and writes to `db.config` via `getConfig()` / `saveConfig()`:
+Admins also manage global system variables via `ConfigPage`, which reads and writes to `db.config` via `getConfig()` / `saveConfig()`:
 
 | Setting | Key | Default | Description |
 |---|---|---|---|
-| Monthly quota | `cuotaMensual` | B/.3.00 | Base water fee per household per month |
-| Allow partials | `permitirParciales` | `true` | Whether partial payments are accepted |
-| Grace months | `mesesGraciaCorte` | 3 | Months without payment before service cut |
+| Monthly quota | `cuotaDiaria` | B/.3.00 | Base water fee per household per month |
 | Jornal fine | `multaJornal` | B/.10.00 | Fine for missing a mandatory work day |
 
 ### Commission Configuration

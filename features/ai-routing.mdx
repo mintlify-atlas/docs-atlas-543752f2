@@ -1,7 +1,7 @@
 ---
 title: "AI-assisted collection routing for SIMAP cobradores"
 sidebarTitle: "AI Routing"
-description: "SIMAP Digital's AI routing mode orders residents by visit priority using risk score, urgency, and geographic sector grouping to maximize collection efficiency."
+description: "SIMAP Digital's AI routing orders cobrador visits by priority using risk score, urgency, and sector grouping to maximize rural water board collections."
 ---
 
 ## What AI routing does
@@ -94,10 +94,8 @@ export async function getSugerenciaCobrador(usuarioTarget) {
       Instrucción:
       Si es 'puntual', redacta un agradecimiento corto.
       Si es 'olvidadizo', un recordatorio amable por WhatsApp.
-      Si es 'moroso', un mensaje firme pero empático ofreciendo un plan de pago
-        o que se acerque a la directiva.
-      REGLA IMPORTANTE: Solo acepta efectivo. Nunca ofrezcas Yappy,
-        transferencias ni depósitos.
+      Si es 'moroso', un mensaje firme pero empático ofreciendo un plan de pago o que se acerque a la directiva.
+      REGLA IMPORTANTE: Solo acepta efectivo. Nunca ofrezcas Yappy, transferencias ni depósitos.
     `;
 
     // Primary: Chrome's Built-in AI (window.ai)

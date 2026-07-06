@@ -35,12 +35,14 @@ Each record written to `db.jornales` contains the following fields:
 | `miembroId` | `string` | ID of the household member being recorded |
 | `fecha` | `string` | Date of the jornal (`YYYY-MM-DD`) |
 | `asiste` | `'si'` \| `'no'` | Whether the household participated |
-| `quien` | `'titular'` \| `'sustituto'` \| `null` | Who physically attended (null if absent) |
-| `suplente_nombre` | `string` | Full name of the substitute (when `quien === 'sustituto'`) |
-| `suplente_cedula` | `string` | National ID (*cédula*) of the substitute |
-| `multa` | `number` | Fine in balboas applied on absence (default B/.10.00) |
-| `horas` | `number` | Hours contributed (default 4, range 1–12) |
+| `quien` | `'titular'` \| `'sustituto'` \| `null` | Who physically attended (`null` when absent) |
+| `multa` | `number` | Fine in balboas applied on absence (default B/.10.00); `0` when attended |
+| `horas` | `number` | Hours contributed (default 4, range 1–12, step 0.5); `0` when absent |
 | `timestamp` | `string` | ISO timestamp of when the record was created |
+
+<Note>
+  The substitute's name (`suplente_nombre`) and cédula (`suplente_cedula`) are collected by the form when `quien === 'sustituto'`, but `jornalesService.registerJornal()` does not persist them to `db.jornales` — they are UI-only fields used for on-screen display during the session. If your board requires permanent substitute records, capture them in the `desc` field or request a service-layer update.
+</Note>
 
 ---
 
