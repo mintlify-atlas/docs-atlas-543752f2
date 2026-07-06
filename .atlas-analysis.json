@@ -1,0 +1,121 @@
+{
+  "projectType": "saas",
+  "projectName": "SIMAP Digital",
+  "projectDescription": "A full-stack offline-first PWA for managing water bill collection, community work (jornales), expenses, gamification, and AI-powered collection routing for rural water boards (Juntas de Acueductos) in Panama.",
+  "theme": "luma",
+  "primaryColor": "#8727fc",
+  "lightColor": "#8c51fc",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/offline-first",
+              "concepts/roles-and-permissions",
+              "concepts/data-model"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Features",
+        "groups": [
+          {
+            "group": "Payments & Collections",
+            "pages": [
+              "features/cobros",
+              "features/payment-types",
+              "features/commissions"
+            ]
+          },
+          {
+            "group": "Community Management",
+            "pages": [
+              "features/jornales",
+              "features/gastos",
+              "features/foro"
+            ]
+          },
+          {
+            "group": "Gamification & AI",
+            "pages": [
+              "features/puntos",
+              "features/ai-routing",
+              "features/risk-scoring"
+            ]
+          },
+          {
+            "group": "Reports & Admin",
+            "pages": [
+              "features/reportes",
+              "features/admin-panel",
+              "features/sync"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Service API",
+            "pages": [
+              "reference/pagos-service",
+              "reference/puntos-service",
+              "reference/ai-service",
+              "reference/auth-service"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "reference/configuration",
+              "reference/database-schema"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Offline-First PWA — fully operational without internet using IndexedDB via Dexie.js",
+    "Multi-role RBAC — admin, cobrador, minsa, cliente, and dev roles with strict route guards",
+    "Six payment types — mensual, diario, parcial, multi-mes, adelanto, puesta_al_día",
+    "Gamification engine — points awarded for punctual payments and jornal attendance, redeemable as discounts",
+    "AI Collection Routing — risk scoring (0-100), smart visitation order, and delinquency prediction",
+    "Commission split system — auto-calculated 60/40 developer/collector split per payment",
+    "Official MINSA reports — one-click export to PDF (jsPDF) and multi-sheet Excel (xlsx)",
+    "Supabase cloud sync — pending-queue pattern that pushes local records on reconnection",
+    "Community forum (foro) — announcements and notices posted by admin/cobrador",
+    "SHA-256 file integrity hashing for uploaded payment receipts"
+  ],
+  "publicApiSurface": [
+    "registrarPago(userId, { tipo, monto, mesesTarget, nota }) — pagosService.js",
+    "calcularEstado(userId) — returns activo | parcial | moroso | corte",
+    "getResumenUsuario(userId) — returns { estado, deuda, mesesDeuda, adelantados, ultimoPago, totalPagos }",
+    "getDeudaTotal(userId) — returns total outstanding balance in balboas",
+    "otorgarPuntos(usuarioId, cantidad, motivo) — puntosService.js",
+    "canjearPuntos(usuarioId, cantidad, motivo) — puntosService.js",
+    "obtenerSaldoPuntos(usuarioId) — returns current point balance",
+    "calcularDescuentoBalboas(puntos) — 1 pt = B/.0.01",
+    "getSugerenciaCobrador(usuarioTarget) — aiService.js, returns empathic message text",
+    "login(email, password) — authService.js, syncs Supabase + Dexie on success",
+    "logout() — clears session and local Dexie tables",
+    "isRouteAllowed(role, path) — RBAC path guard",
+    "getHomeRoute(role) — returns default redirect path for role",
+    "initDB() — seeds IndexedDB and migrates localStorage data",
+    "getConfig() / saveConfig(cfg) — reads/writes system config (cuotaMensual, mesesGraciaCorte, etc.)"
+  ]
+}

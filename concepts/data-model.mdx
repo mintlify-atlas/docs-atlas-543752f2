@@ -1,0 +1,181 @@
+---
+title: "SIMAP Digital data model and IndexedDB schema"
+sidebarTitle: "Data Model"
+description: "SIMAP Digital persists data across 12 IndexedDB tables managed by Dexie.js, covering users, payments, balances, audit logs, and gamification."
+---
+
+## Overview
+
+All application data lives inside an **IndexedDB** database named `SIMAPDigital`, managed by [Dexie.js](https://dexie.org). This local database is the primary source of truth — every read and write goes through Dexie regardless of network status. Supabase (PostgreSQL) is a synchronization target, not the operational database.
+
+The schema has grown across **six versioned migrations**, each adding new tables as the product expanded from basic cobros to gamification, messaging, and notifications.
+
+---
+
+## Tables at a glance
+
+| Table | Key / Indexes | Purpose |
+|-------|--------------|---------|
+| `usuarios` | `++id`, `nombre`, `sector` | Community member (vecino) records |
+| `pagos` | `++idPago`, `usuarioId`, `tipo`, `mesTarget`, `fecha` | All payment cobros |
+| `saldos` | `[usuarioId+mes]`, `estado` | Per-user, per-month ledger (composite key) |
+| `gastos` | `++id`, `fecha` | Junta expense records |
+| `jornales` | `++id`, `miembroId`, `fecha` | Community work attendance logs |
+| `pendingSync` | `++id`, `type`, `timestamp` | Offline sync queue |
+| `config` | `key` | System configuration store |
+| `registeredUsers` | `user`, `rol`, `estado` | App user accounts and their approval states |
+| `foro` | `++id`, `fecha`, `autor` | Community bulletin board posts |
+| `juntas` | `++id`, `nombre`, `ruc`, `estado` | B2B water board registrations |
+| `auditoria` | `++id`, `timestamp`, `accion`, `user_id`, `afectado_id` | Immutable audit log |
+| `archivos` | `++id`, `pagoId`, `fileHash`, `fileName` | Payment attachment metadata |
+| `puntos_historial` | `++id`, `usuarioId`, `fecha`, `tipo_transaccion` | Gamification points history |
+| `notificaciones` | `++id`, `usuarioId`, `fecha`, `leido` | In-app notifications |
+| `mensajes` | `++id`, `conversacionId`, `de`, `para`, `fecha`, `leido` | Direct messages between users |
+
+---
+
+## Full Dexie schema definition
+
+The schema is defined in `src/services/db.js`. Each `db.version(n).stores({})` call is additive — later versions extend the schema without replacing earlier tables:
+
+```js
+// src/services/db.js
+import Dexie from 'dexie';
+
+export const db = new Dexie('SIMAPDigital');
+
+db.version(1).stores({
+  usuarios:       '++id, nombre, sector',
+  pagos:          '++idPago, usuarioId, tipo, mesTarget, fecha',
+  saldos:         '[usuarioId+mes], estado',
+  gastos:         '++id, fecha',
+  jornales:       '++id, miembroId, fecha',
+  pendingSync:    '++id, type, timestamp',
+  config:         'key',
+  registeredUsers: 'user, rol, estado',
+});
+
+db.version(2).stores({
+  foro: '++id, fecha, autor',
+});
+
+db.version(3).stores({
+  juntas:    '++id, nombre, ruc, estado',       // B2B water board registration
+  auditoria: '++id, timestamp, accion, user_id, afectado_id', // Audit logs
+  archivos:  '++id, pagoId, fileHash, fileName', // Blob storage metadata
+});
+
+db.version(4).stores({
+  puntos_historial: '++id, usuarioId, fecha, tipo_transaccion',
+});
+
+db.version(5).stores({
+  notificaciones: '++id, usuarioId, fecha, leido',
+});
+
+db.version(6).stores({
+  mensajes: '++id, conversacionId, de, para, fecha, leido',
+});
+```
+
+---
+
+## Schema versioning history
+
+| Version | Tables added | What it enabled |
+|---------|-------------|-----------------|
+| 1 | `usuarios`, `pagos`, `saldos`, `gastos`, `jornales`, `pendingSync`, `config`, `registeredUsers` | Core offline cobros, jornal logging, and sync queue |
+| 2 | `foro` | Community bulletin board / announcements |
+| 3 | `juntas`, `auditoria`, `archivos` | B2B junta onboarding, immutable audit trail, payment file attachments |
+| 4 | `puntos_historial` | Gamification — points earned per payment and jornal |
+| 5 | `notificaciones` | Per-user in-app notification inbox |
+| 6 | `mensajes` | Direct messaging between cobrador and clients |
+
+---
+
+## System configuration object
+
+The `config` table uses string keys. The `'general'` key holds the system-wide operational settings:
+
+```js
+// DEFAULT_CONFIG from src/utils/constants.js
+export const DEFAULT_CONFIG = {
+  cuotaMensual:      3.00,   // Monthly water fee in B/. (Balboas)
+  permitirParciales: true,   // Allow partial payments
+  mesesGraciaCorte:  3,      // Months of non-payment before service cut
+};
+```
+
+`initDB()` seeds this key on first launch. Admins can update it at runtime via `saveConfig(cfg)`, which performs an upsert (`db.config.put`).
+
+---
+
+## The `saldos` composite key pattern
+
+The `saldos` table uses a **compound primary key** `[usuarioId+mes]`:
+
+```js
+saldos: '[usuarioId+mes], estado'
+```
+
+This means the combination of `usuarioId` and `mes` (formatted as `YYYY-MM`) uniquely identifies a single balance record. There is exactly one saldo row per user per month — no duplicates are possible at the database level.
+
+**Why a composite key instead of auto-increment?**
+
+- **Idempotent upserts.** `db.saldos.put({ usuarioId, mes, ... })` either creates or updates the record without needing to look up an existing ID first.
+- **Fast lookups.** `db.saldos.get([usuarioId, '2025-03'])` is a single indexed read — no full-table scan.
+- **Natural identity.** A balance for user `42` in `March 2025` has a stable, human-readable identity: `[42, '2025-03']`.
+
+Multi-month payments work by iterating a range of months and upserting one saldo row per month in a single transaction.
+
+---
+
+## The `auditoria` table
+
+Every security-relevant action in SIMAP Digital is permanently recorded in `auditoria`. The table is append-only by convention — no record is ever updated or deleted.
+
+```js
+auditoria: '++id, timestamp, accion, user_id, afectado_id'
+```
+
+| Field | Description |
+|-------|-------------|
+| `id` | Auto-increment local ID |
+| `timestamp` | ISO 8601 datetime of the action |
+| `accion` | String describing the operation (e.g. `"PAGO_REGISTRADO"`, `"USUARIO_APROBADO"`, `"CONFIG_ACTUALIZADA"`) |
+| `user_id` | UUID of the authenticated user who performed the action |
+| `afectado_id` | UUID or local ID of the entity that was affected |
+
+The `dev` role has **read-only** access to this table via the Auditoría tab in `/admin`. No other role can view audit records. When `auditoria` data is synced to Supabase, it feeds the cloud-side audit trail which admins can query for compliance and incident review.
+
+---
+
+## The `archivos` table
+
+`archivos` stores metadata about files attached to payment records (e.g. photo receipts). The actual binary content is stored in Supabase Storage; only the reference is kept in IndexedDB:
+
+```js
+archivos: '++id, pagoId, fileHash, fileName'
+```
+
+`fileHash` is a content hash used to detect duplicate uploads and prevent re-sending the same file during sync retries.
+
+---
+
+## Soft-delete pattern
+
+<Note>
+SIMAP Digital never physically deletes records from its operational tables. Instead, records are deactivated by setting `estado: 'inactivo'` (or equivalent flag fields). This applies to:
+
+- **`usuarios`** — deactivated community members remain in the database so historical payment records remain intact and auditable.
+- **`registeredUsers`** — suspended accounts (`estado: 'suspendido'`) are retained for the audit trail.
+- **`juntas`** — water boards can be placed in `estado: 'pendiente_global'` or `'inactivo'` without data loss.
+
+Physical deletion only occurs in `logout()`, which clears `db.usuarios`, `db.pagos`, and `db.saldos` for security — not as a data management operation. All cloud data in Supabase is unaffected by the local clear.
+</Note>
+
+---
+
+## localStorage migration
+
+On first launch after upgrading from the legacy HTML5/vanilla-JS version of SIMAP, `initDB()` automatically runs `migrateFromLocalStorage()`. This one-time migration reads `simap_users`, `simap_pagos`, `simap_gastos`, and `simap_usuarios` from `localStorage`, imports them into the corresponding Dexie tables, and writes a `ls_migrated` config flag to prevent re-running. No data is lost during the upgrade path.

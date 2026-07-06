@@ -1,0 +1,159 @@
+---
+title: "aiService: AI-powered collection suggestions API"
+sidebarTitle: "aiService"
+description: "JavaScript module that analyzes resident payment behavior and generates empathic collection message suggestions using Chrome Built-in AI or a local fallback."
+---
+
+`aiService` assists collectors (cobradores) by generating context-aware, empathic collection messages tailored to each resident's payment behavior profile. The service first tries to use **Chrome's Built-in AI** (`window.ai`), then automatically falls back to handcrafted template messages when the API is unavailable — ensuring the feature works fully offline.
+
+<Note>
+  **Cash only.** Per board policy, SIMAP Digital only accepts in-person cash payments. The AI prompt explicitly instructs the language model never to suggest digital payment methods such as Yappy, bank transfers, or deposits.
+</Note>
+
+---
+
+## Behavior profiles
+
+Before generating a message, the service internally calls the private `analizarComportamiento(userId)` function, which calls `getResumenUsuario` from `pagosService` and classifies the resident into one of three profiles:
+
+| Profile | Condition | Message tone |
+|---|---|---|
+| `'puntual'` | `resumen.deuda === 0` | Warm thank-you message. |
+| `'olvidadizo'` | `resumen.mesesDeuda === 1` | Friendly WhatsApp-style reminder. |
+| `'moroso'` | `resumen.mesesDeuda >= 2` | Firm but empathic message offering a payment plan or a visit to the board. |
+
+---
+
+## `getSugerenciaCobrador(usuarioTarget)`
+
+Generates a suggested collection message for a resident. Internally:
+
+1. Calls `analizarComportamiento(usuarioTarget.id)` to determine the resident's behavior profile.
+2. Calls `getResumenUsuario(usuarioTarget.id)` to retrieve debt figures.
+3. Builds a structured prompt and submits it to `window.ai.createTextSession()` if the Chrome Built-in AI API is available.
+4. If `window.ai` is absent, returns a pre-built template message based on the profile.
+
+```javascript
+async function getSugerenciaCobrador(
+  usuarioTarget: { id: number | string; nombre: string; sector: string }
+): Promise<{ success: boolean; text: string }>
+```
+
+**Parameters**
+
+<ParamField path="usuarioTarget" type="object" required>
+  A resident object. Typically sourced from the `usuarios` Dexie table or the `DEMO_USERS` constant.
+</ParamField>
+
+<ParamField path="usuarioTarget.id" type="number | string" required>
+  Resident ID — passed to `pagosService` functions to look up payment history.
+</ParamField>
+
+<ParamField path="usuarioTarget.nombre" type="string" required>
+  Resident's display name (e.g., `'Los Alonsos'`). Injected directly into the AI prompt and fallback templates.
+</ParamField>
+
+<ParamField path="usuarioTarget.sector" type="string" required>
+  Resident's sector or neighborhood (e.g., `'Caballero Abajo'`). Included in the prompt for geographic context.
+</ParamField>
+
+**Returns**
+
+<ResponseField name="success" type="boolean">
+  `true` if the message was generated successfully (either by the AI or the fallback template). `false` only if an unexpected exception occurs.
+</ResponseField>
+
+<ResponseField name="text" type="string">
+  The generated collection message ready to copy into WhatsApp or read aloud. On error, returns `'No se pudo conectar con el motor de IA.'`.
+</ResponseField>
+
+---
+
+## Prompt template
+
+When `window.ai` is available, the following prompt is sent to the language model. The values in `${}` are interpolated at runtime:
+
+```text
+Actúa como asistente cordial de cobros para una Junta de Agua (SIMAP).
+Cliente: ${usuarioTarget.nombre} (${usuarioTarget.sector})
+Deuda actual: B/. ${resumen.deuda.toFixed(2)} (${resumen.mesesDeuda} meses)
+Perfil: ${perfil}
+
+Instrucción:
+Si es 'puntual', redacta un agradecimiento corto.
+Si es 'olvidadizo', un recordatorio amable por WhatsApp.
+Si es 'moroso', un mensaje firme pero empático ofreciendo un plan de pago
+o que se acerque a la directiva.
+REGLA IMPORTANTE: Solo acepta efectivo. Nunca ofrezcas Yappy,
+transferencias ni depósitos.
+```
+
+---
+
+## Fallback template messages
+
+When `window.ai` is unavailable (e.g., non-Chrome browser, offline with no cached model), the service returns one of two static templates:
+
+**For `'puntual'` residents:**
+> *¡Hola [nombre]! Gracias por estar al día. Tu buen comportamiento nos ayuda a mantener el agua fluyendo.*
+
+**For `'olvidadizo'` or `'moroso'` residents:**
+> *Hola [nombre], soy de la Junta de Agua. Vemos un saldo pendiente de B/. [deuda]. Recuerda que el pago solo se realiza en efectivo con nuestro cobrador o en la junta. ¡Saludos!*
+
+---
+
+## Usage example
+
+```javascript
+import { getSugerenciaCobrador } from './services/aiService';
+
+// Resident "Los Alonsos" — 2 months overdue (profile: 'moroso')
+const sugerencia = await getSugerenciaCobrador({
+  id: 3,
+  nombre: 'Los Alonsos',
+  sector: 'Caballero Abajo',
+});
+
+console.log(sugerencia.success); // true
+console.log(sugerencia.text);
+// With Chrome AI:
+// "Estimado cliente Los Alonsos, hemos notado que tiene un saldo pendiente
+//  de B/. 6.00 correspondiente a 2 meses. Le invitamos a acercarse a la
+//  directiva para coordinar un plan de pago conveniente. Recuerde que el
+//  pago se realiza únicamente en efectivo. ¡Gracias!"
+//
+// Without Chrome AI (fallback):
+// "Hola Los Alonsos, soy de la Junta de Agua. Vemos un saldo pendiente de
+//  B/. 6.00. Recuerda que el pago solo se realiza en efectivo con nuestro
+//  cobrador o en la junta. ¡Saludos!"
+```
+
+```javascript
+// Resident "Familia Rodriguez" — fully up to date (profile: 'puntual')
+const gracias = await getSugerenciaCobrador({
+  id: 2,
+  nombre: 'Familia Rodriguez',
+  sector: 'Caballero Arriba',
+});
+
+console.log(gracias.text);
+// "¡Hola Familia Rodriguez! Gracias por estar al día.
+//  Tu buen comportamiento nos ayuda a mantener el agua fluyendo."
+```
+
+---
+
+## Error handling
+
+If an unexpected exception is thrown during profile analysis or the AI session, the function catches it internally and returns a safe error state rather than propagating the exception:
+
+```javascript
+// Error case — e.g., Dexie unavailable
+const result = await getSugerenciaCobrador({ id: 99, nombre: 'N/A', sector: 'N/A' });
+console.log(result.success); // false
+console.log(result.text);    // "No se pudo conectar con el motor de IA."
+```
+
+<Note>
+  Future versions may route the prompt to OpenAI using a `VITE_OPENAI_API_KEY` environment variable, as noted in the source. The fallback structure is already in place to support this seamlessly.
+</Note>

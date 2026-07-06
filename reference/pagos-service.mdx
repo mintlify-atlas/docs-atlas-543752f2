@@ -1,0 +1,448 @@
+---
+title: "pagosService: payment registration and balance calculation API"
+sidebarTitle: "pagosService"
+description: "JavaScript module exposing functions to register payments, calculate resident status, retrieve debt totals, and manage the local Dexie saldo ledger."
+---
+
+`pagosService` is the core financial engine of SIMAP Digital. It writes payment records and saldo ledger entries directly to the local Dexie database, queues them in `pendingSync` for cloud upload, and maintains each resident's payment status — all without requiring network connectivity.
+
+---
+
+## `getPaymentConfig()`
+
+Returns the current tariff configuration stored in the Dexie `config` table.
+
+```javascript
+async function getPaymentConfig(): Promise<Config>
+```
+
+**Returns**
+
+<ResponseField name="cuotaMensual" type="number">
+  Monthly water fee in Panamanian balboas (B/.). Default: `3.00`.
+</ResponseField>
+
+<ResponseField name="permitirParciales" type="boolean">
+  Whether partial payments are enabled for this water board. Default: `true`.
+</ResponseField>
+
+<ResponseField name="mesesGraciaCorte" type="number">
+  Number of unpaid months before a resident's status escalates to `'corte'`. Default: `3`.
+</ResponseField>
+
+**Example**
+
+```javascript
+import { getPaymentConfig } from './services/pagosService';
+
+const config = await getPaymentConfig();
+console.log(`Cuota mensual: B/. ${config.cuotaMensual}`); // "Cuota mensual: B/. 3.00"
+```
+
+---
+
+## `getCuotaDiaria()`
+
+Calculates the daily tariff by dividing the configured monthly fee by 30, then rounding.
+
+```javascript
+async function getCuotaDiaria(): Promise<number>
+```
+
+**Returns**
+
+A `number` representing the daily fee in balboas, rounded to two decimal places (e.g., `0.10` for a B/.3.00 monthly rate).
+
+**Example**
+
+```javascript
+import { getCuotaDiaria } from './services/pagosService';
+
+const cuotaDiaria = await getCuotaDiaria();
+console.log(`Cuota diaria: B/. ${cuotaDiaria}`); // "Cuota diaria: B/. 0.10"
+```
+
+---
+
+## `registrarPago(userId, opciones)`
+
+Main entry point for the `CobrosPage`. Registers a payment of any supported type, updates the Dexie `saldos` ledger, queues a `pendingSync` record, awards gamification points where applicable, and recalculates the resident's status.
+
+```javascript
+async function registrarPago(
+  userId: string | number,
+  opciones: {
+    tipo: 'mensual' | 'diario' | 'parcial' | 'multi_mes' | 'adelanto' | 'puesta_al_dia';
+    monto?: number;
+    mesesTarget?: string | string[];
+    nota?: string;
+  }
+): Promise<Recibo[]>
+```
+
+**Parameters**
+
+<ParamField path="userId" type="string | number" required>
+  The unique identifier of the resident in the local Dexie `usuarios` table.
+</ParamField>
+
+<ParamField path="opciones.tipo" type="string" required>
+  Payment type. One of:
+
+  | Value | Description |
+  |---|---|
+  | `mensual` | Full payment for one calendar month (awards 5 points). |
+  | `diario` | Partial payment calculated in daily increments. |
+  | `parcial` | Arbitrary partial amount applied to a single month. |
+  | `multi_mes` | One transaction covering multiple past or current months (awards 10 pts × months). |
+  | `adelanto` | Pre-payment for future months starting next month (awards 10 pts × months). |
+  | `puesta_al_dia` | Catches up all outstanding unpaid months in a single operation. |
+</ParamField>
+
+<ParamField path="opciones.monto" type="number">
+  Amount tendered in balboas. Required for `diario`, `parcial`, `multi_mes`, and `adelanto`. Ignored for `mensual` and `puesta_al_dia` (which calculate the amount internally).
+</ParamField>
+
+<ParamField path="opciones.mesesTarget" type="string | string[]">
+  Target month string (`'YYYY-MM'`) or array of month strings for `multi_mes` / `adelanto`. If omitted, the service generates the month list automatically from the current date.
+</ParamField>
+
+<ParamField path="opciones.nota" type="string">
+  Optional free-text note attached to the receipt (e.g., `'Cliente pagó con billete de 5'`).
+</ParamField>
+
+**Returns** — Array of `Recibo` objects, one per month covered:
+
+<ResponseField name="idPago" type="number">
+  Auto-generated unique payment ID (`Date.now() + random`).
+</ResponseField>
+
+<ResponseField name="usuarioId" type="string | number">
+  The resident's ID as passed to `registrarPago`.
+</ResponseField>
+
+<ResponseField name="monto" type="number">
+  Rounded amount applied in this receipt (balboas).
+</ResponseField>
+
+<ResponseField name="fecha" type="string">
+  ISO 8601 timestamp of when the payment was recorded.
+</ResponseField>
+
+<ResponseField name="tipo" type="string">
+  The payment type string (mirrors `opciones.tipo`).
+</ResponseField>
+
+<ResponseField name="mesTarget" type="string">
+  The `'YYYY-MM'` string of the month this receipt is applied to.
+</ResponseField>
+
+<ResponseField name="mesesCubiertos" type="string[]">
+  Array of all month strings covered by the transaction. For single-month types, this is a one-element array.
+</ResponseField>
+
+<ResponseField name="nota" type="string">
+  The note string passed in `opciones.nota`, or an empty string.
+</ResponseField>
+
+<ResponseField name="cobradorId" type="string">
+  Email (or `'cobrador'` fallback) of the logged-in collector, read from `sessionStorage`.
+</ResponseField>
+
+**Examples**
+
+```javascript
+import { registrarPago } from './services/pagosService';
+
+// 1. Register a standard monthly payment for the current month
+const [recibo] = await registrarPago(3, { tipo: 'mensual' });
+console.log(recibo.tipo);       // "mensual"
+console.log(recibo.monto);      // 3 (B/. 3.00)
+console.log(recibo.mesTarget);  // e.g. "2025-07"
+
+// 2. Pay three months at once (multi_mes)
+const recibos = await registrarPago(3, {
+  tipo: 'multi_mes',
+  monto: 9.00, // 3 months × B/.3.00
+  nota: 'Pago de meses adeudados',
+});
+console.log(recibos.length);             // 3
+console.log(recibos[0].mesesCubiertos);  // ["2025-05", "2025-06", "2025-07"]
+```
+
+<Note>
+  Every call to `registrarPago` also inserts a record into the Dexie `pendingSync` table. Those records are uploaded to Supabase the next time the device has connectivity and `syncFromSupabase()` is called.
+</Note>
+
+---
+
+## `calcularEstado(userId)`
+
+Derives the current payment status of a resident by inspecting their `saldos` records in Dexie and comparing against the grace-period threshold from the board's configuration.
+
+```javascript
+async function calcularEstado(userId: string | number): Promise<string>
+```
+
+**Parameters**
+
+<ParamField path="userId" type="string | number" required>
+  The resident's ID.
+</ParamField>
+
+**Returns**
+
+A `string` — one of:
+
+| Value | Meaning |
+|---|---|
+| `'activo'` | Current month is fully paid and no prior months are outstanding. |
+| `'parcial'` | Current month has been partially paid. |
+| `'moroso'` | One or more months are unpaid but below the cut-off threshold. |
+| `'corte'` | Unpaid months ≥ `mesesGraciaCorte` (default 3) — service cut eligible. |
+
+**Example**
+
+```javascript
+import { calcularEstado } from './services/pagosService';
+
+const estado = await calcularEstado(4);
+// "corte" — Familia Moreno has 3 months unpaid
+```
+
+---
+
+## `getDeudaTotal(userId)`
+
+Walks backwards through up to 36 months of `saldos` records to sum all outstanding balances, stopping at the first fully-paid month.
+
+```javascript
+async function getDeudaTotal(userId: string | number): Promise<number>
+```
+
+**Parameters**
+
+<ParamField path="userId" type="string | number" required>
+  The resident's ID.
+</ParamField>
+
+**Returns**
+
+A `number` — the total unpaid balance in balboas, rounded to two decimal places. For months with no `saldo` record, the full `cuotaMensual` is added to the total.
+
+**Example**
+
+```javascript
+import { getDeudaTotal } from './services/pagosService';
+
+const deuda = await getDeudaTotal(3);
+console.log(`Deuda total: B/. ${deuda.toFixed(2)}`); // "Deuda total: B/. 6.00"
+```
+
+---
+
+## `getMesesAdelantados(userId)`
+
+Counts how many consecutive future months — starting from the month after the current one — are already fully paid.
+
+```javascript
+async function getMesesAdelantados(userId: string | number): Promise<number>
+```
+
+**Parameters**
+
+<ParamField path="userId" type="string | number" required>
+  The resident's ID.
+</ParamField>
+
+**Returns**
+
+A `number` — count of advance-paid future months (0 if none). Stops counting at the first month that has no payment record.
+
+**Example**
+
+```javascript
+import { getMesesAdelantados } from './services/pagosService';
+
+const adelantados = await getMesesAdelantados(2);
+console.log(`Meses adelantados: ${adelantados}`); // e.g. 2
+```
+
+---
+
+## `getResumenUsuario(userId)`
+
+Returns a complete financial summary for a resident in a single call. Internally it calls `calcularEstado`, `getDeudaTotal`, and queries the `pagos` table.
+
+```javascript
+async function getResumenUsuario(userId: string | number): Promise<ResumenUsuario>
+```
+
+**Parameters**
+
+<ParamField path="userId" type="string | number" required>
+  The resident's ID.
+</ParamField>
+
+**Returns**
+
+<ResponseField name="estado" type="string">
+  Payment status: `'activo'` | `'parcial'` | `'moroso'` | `'corte'`.
+</ResponseField>
+
+<ResponseField name="deuda" type="number">
+  Total outstanding balance in balboas.
+</ResponseField>
+
+<ResponseField name="mesesDeuda" type="number">
+  Number of consecutive months with unpaid or partial balances.
+</ResponseField>
+
+<ResponseField name="adelantados" type="number">
+  Number of future months already paid ahead of time.
+</ResponseField>
+
+<ResponseField name="ultimoPago" type="string | null">
+  ISO 8601 timestamp of the resident's most recent payment, or `null` if no payments exist.
+</ResponseField>
+
+<ResponseField name="totalPagos" type="number">
+  Total count of payment records for this resident.
+</ResponseField>
+
+**Example**
+
+```javascript
+import { getResumenUsuario } from './services/pagosService';
+
+const resumen = await getResumenUsuario(3);
+/*
+{
+  estado: 'moroso',
+  deuda: 6.00,
+  mesesDeuda: 2,
+  adelantados: 0,
+  ultimoPago: '2025-05-10T14:32:00.000Z',
+  totalPagos: 14
+}
+*/
+```
+
+---
+
+## `hasPaidMonth(userId, mes)`
+
+Checks whether a resident has a fully-paid (`estado === 'pagado'`) saldo record for a given month.
+
+```javascript
+async function hasPaidMonth(
+  userId: string | number,
+  mes: string
+): Promise<boolean>
+```
+
+**Parameters**
+
+<ParamField path="userId" type="string | number" required>
+  The resident's ID.
+</ParamField>
+
+<ParamField path="mes" type="string" required>
+  Month string in `'YYYY-MM'` format (e.g., `'2025-07'`).
+</ParamField>
+
+**Returns**
+
+`true` if a saldo record exists and `saldo.estado === 'pagado'`; `false` otherwise.
+
+**Example**
+
+```javascript
+import { hasPaidMonth } from './services/pagosService';
+
+const paid = await hasPaidMonth(2, '2025-07');
+console.log(paid); // true — Familia Rodriguez is up to date
+```
+
+---
+
+## `getPagosUsuario(userId)`
+
+Retrieves the full payment history for a resident from the local Dexie `pagos` table.
+
+```javascript
+async function getPagosUsuario(userId: string | number): Promise<Recibo[]>
+```
+
+**Parameters**
+
+<ParamField path="userId" type="string | number" required>
+  The resident's ID.
+</ParamField>
+
+**Returns**
+
+An array of `Recibo` objects (see [registrarPago](#registrarpago-userid-opciones) for the full shape). Returns an empty array if no payments have been recorded.
+
+**Example**
+
+```javascript
+import { getPagosUsuario } from './services/pagosService';
+
+const historial = await getPagosUsuario(1);
+console.log(`${historial.length} pagos registrados`);
+```
+
+---
+
+## `getPendingSyncCount()`
+
+Returns the number of payment records currently queued in the Dexie `pendingSync` table that have not yet been uploaded to Supabase.
+
+```javascript
+async function getPendingSyncCount(): Promise<number>
+```
+
+**Returns**
+
+A `number` — count of pending sync records. Useful for displaying an offline-indicator badge in the UI.
+
+**Example**
+
+```javascript
+import { getPendingSyncCount } from './services/pagosService';
+
+const pending = await getPendingSyncCount();
+if (pending > 0) {
+  console.log(`${pending} pagos esperando sincronización`);
+}
+```
+
+---
+
+## `clearPendingSync()`
+
+Empties the Dexie `pendingSync` table entirely. Should only be called after all pending records have been successfully uploaded to Supabase.
+
+```javascript
+async function clearPendingSync(): Promise<void>
+```
+
+**Returns**
+
+`void`. Resolves once the table has been cleared.
+
+**Example**
+
+```javascript
+import { getPendingSyncCount, clearPendingSync } from './services/pagosService';
+
+// After a successful cloud sync:
+await clearPendingSync();
+const remaining = await getPendingSyncCount();
+console.log(remaining); // 0
+```
+
+<Warning>
+  Calling `clearPendingSync()` before records are confirmed uploaded will cause permanent data loss for those transactions. Always verify the Supabase upsert succeeded before clearing.
+</Warning>

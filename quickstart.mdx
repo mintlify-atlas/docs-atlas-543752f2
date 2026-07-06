@@ -1,47 +1,159 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with SIMAP Digital in minutes"
+sidebarTitle: "Quickstart"
+description: "Install SIMAP Digital locally, configure Supabase credentials, start the dev server, and explore each role with built-in demo accounts."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you from a fresh clone to a running SIMAP Digital dev server with demo data pre-loaded for all five roles.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, make sure you have the following installed:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+- **Node.js ≥ 18** — [nodejs.org](https://nodejs.org/)
+- **npm** (bundled with Node.js)
+- A **Supabase project** for cloud sync (optional for purely offline local testing — the app runs without it)
 
-## Get started
+## Installation
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repository">
+    Clone the SIMAP Digital source and move into the project directory.
+
+    <CodeGroup>
+      ```bash npm
+      git clone https://github.com/AdriP-maker/JAAR_Antigravity.git
+      cd JAAR_Antigravity
+      ```
+
+      ```bash yarn
+      git clone https://github.com/AdriP-maker/JAAR_Antigravity.git
+      cd JAAR_Antigravity
+      ```
+
+      ```bash pnpm
+      git clone https://github.com/AdriP-maker/JAAR_Antigravity.git
+      cd JAAR_Antigravity
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Install dependencies">
+    Install all runtime and development dependencies.
+
+    <CodeGroup>
+      ```bash npm
+      npm install
+      ```
+
+      ```bash yarn
+      yarn install
+      ```
+
+      ```bash pnpm
+      pnpm install
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Create your environment file">
+    Copy the provided example environment file to create your local `.env`.
 
     ```bash
-    npm install your-package
+    cp .env.example .env
+    ```
+
+    The `.env.example` file ships with the following variables:
+
+    ```bash .env.example
+    # App identity
+    VITE_APP_NAME="SIMAP Digital Plataforma"
+    VITE_APP_VERSION="1.0.0"
+
+    # AI provider (optional — defaults to browser-local window.ai)
+    VITE_AI_PROVIDER="local"   # Options: "local", "openai", "claude"
+    VITE_OPENAI_API_KEY="sk-..."
+
+    # Supabase cloud sync (required for online sync)
+    VITE_SUPABASE_URL="https://tu-proyecto.supabase.co"
+    VITE_SUPABASE_ANON_KEY="tu-anon-key"
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
+  <Step title="Configure Supabase credentials">
+    Open `.env` in your editor and replace the placeholder values with your real Supabase project credentials.
+
+    ```bash .env
+    VITE_SUPABASE_URL="https://your-project-ref.supabase.co"
+    VITE_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+    You can find both values in your Supabase dashboard under **Project Settings → API**.
+
+    <Note>
+      `VITE_` prefixed variables are bundled into the client-side JavaScript by Vite and are therefore visible in the browser. Use only your `anon` (public) key here — never your `service_role` secret key.
+    </Note>
+  </Step>
+
+  <Step title="Start the development server">
+    Launch the Vite dev server. The browser opens automatically at `http://localhost:5173`.
+
+    <CodeGroup>
+      ```bash npm
+      npm run dev
+      ```
+
+      ```bash yarn
+      yarn dev
+      ```
+
+      ```bash pnpm
+      pnpm dev
+      ```
+    </CodeGroup>
+
+    You should see output similar to:
+
+    ```
+      VITE v8.x.x  ready in 312 ms
+
+      ➜  Local:   http://localhost:5173/
+      ➜  Network: use --host to expose
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Demo credentials
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+The app seeds IndexedDB with demo accounts on first launch (defined in `src/utils/constants.js`). Use these to explore each role's interface:
+
+| Role | Username | Password | Description |
+|---|---|---|---|
+| `admin` | `admin` | `admin123` | Full system control — users, finances, audit logs, system config. |
+| `cobrador` | `cobrador` | `1234` | Field collector — offline payments, AI route suggestions, jornales. |
+| `minsa` | `minsa` | `1234` | Read-only MINSA inspector — download official Excel and PDF reports. |
+| `cliente` | `cliente` | `1234` | Resident/neighbour view — payment history, points balance, notices. |
+| `dev` | `dev` | `admin123` | Audit log only — no access to financial data or resident PII. |
+
+<Warning>
+  These demo credentials are hardcoded for local development and testing only. **Never deploy SIMAP Digital to a production environment with these default passwords.** Replace all demo accounts with real credentials secured through Supabase Auth before going live.
+</Warning>
+
+## Available npm scripts
+
+| Script | Command | Description |
+|---|---|---|
+| Dev server | `npm run dev` | Starts Vite dev server at `http://localhost:5173` with HMR. |
+| Production build | `npm run build` | Compiles and bundles the app into the `dist/` directory. |
+| Preview build | `npm run preview` | Serves the production `dist/` build locally for pre-deploy testing. |
+| Lint | `npm run lint` | Runs ESLint across the source tree. |
+
+## Offline-first behaviour
+
+Once the app has loaded at least once, it operates fully without internet access:
+
+- All data (residents, payments, expenses, jornales) is stored in **IndexedDB** on the device via Dexie.js.
+- Any write made while offline is queued in the `pendingSync` table.
+- When the browser detects an `online` event, SIMAP Digital automatically flushes the pending queue to Supabase.
+
+You can test this by loading the app, switching your browser to offline mode (DevTools → Network → Offline), and processing a payment — it will register instantly. Switch back online and the record will sync to Supabase in the background.

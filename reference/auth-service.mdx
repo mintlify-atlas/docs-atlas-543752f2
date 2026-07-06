@@ -1,0 +1,442 @@
+---
+title: "authService: authentication and RBAC route guards"
+sidebarTitle: "authService"
+description: "JavaScript module handling Supabase authentication, session management, role-based route access control, and user registration for SIMAP Digital."
+---
+
+`authService` wraps Supabase Auth and provides a session abstraction layer for SIMAP Digital. After a successful login it stores a lightweight session object in `sessionStorage`, triggers an offline sync of all resident and payment data, and exposes route-guard helpers that enforce role-based access control (RBAC) across the application.
+
+---
+
+## Session object
+
+<Note>
+  The session is stored in `sessionStorage` under the key `'simap_session'` as a JSON string. It is cleared on `logout()` and does **not** persist across browser tab closures.
+</Note>
+
+<ResponseField name="user" type="string">
+  The authenticated user's email address.
+</ResponseField>
+
+<ResponseField name="rol" type="string">
+  Role assigned to this user: `'admin'` | `'cobrador'` | `'minsa'` | `'cliente'` | `'dev'`. Falls back to `'cliente'` if no profile is found.
+</ResponseField>
+
+<ResponseField name="nombre" type="string">
+  Display name from the Supabase `profiles` table. Falls back to the email address.
+</ResponseField>
+
+<ResponseField name="uid" type="string">
+  The Supabase Auth UUID for this user.
+</ResponseField>
+
+<ResponseField name="loginAt" type="string">
+  ISO 8601 timestamp of when the session was created.
+</ResponseField>
+
+---
+
+## `login(email, password)`
+
+Authenticates a user against Supabase, loads their profile, enforces account-state checks, persists the session in `sessionStorage`, and kicks off an offline data sync.
+
+```javascript
+async function login(
+  email: string,
+  password: string
+): Promise<{ success: true; user: Session } | { success: false; error: string }>
+```
+
+**Parameters**
+
+<ParamField path="email" type="string" required>
+  User's email address. Leading and trailing whitespace is trimmed before the Supabase call.
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  User's plain-text password. Sent directly to `supabase.auth.signInWithPassword`.
+</ParamField>
+
+**Returns**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful authentication; `false` on any failure.
+</ResponseField>
+
+<ResponseField name="user" type="Session">
+  Populated only when `success` is `true`. Contains the full session object (see above).
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Populated only when `success` is `false`. Human-readable Spanish error message.
+</ResponseField>
+
+**Account state guards**
+
+Before creating the session, `login` reads the user's `profiles` row and rejects login for:
+
+| `profile.estado` | Error message |
+|---|---|
+| `'pendiente'` | `'⏳ Tu cuenta aún no ha sido aprobada.'` |
+| `'rechazado'` | `'❌ Tu solicitud fue rechazada.'` |
+| `'suspendido'` | `'⚠️ Tu cuenta ha sido suspendida.'` |
+
+**Example**
+
+```javascript
+import { login } from './services/authService';
+
+const result = await login('cobrador@junta.pa', 'mipassword');
+
+if (result.success) {
+  console.log(result.user.rol);    // "cobrador"
+  console.log(result.user.nombre); // "Carlos Muñoz"
+} else {
+  console.error(result.error);     // "Usuario o contraseña incorrectos o error de red."
+}
+```
+
+---
+
+## `logout()`
+
+Signs the user out of Supabase, removes the session from `sessionStorage`, and wipes the three core Dexie tables (`usuarios`, `pagos`, `saldos`) to prevent data leakage between sessions.
+
+```javascript
+async function logout(): Promise<void>
+```
+
+**Returns**
+
+`void`. Resolves once Supabase sign-out and all Dexie table clears are complete.
+
+**Example**
+
+```javascript
+import { logout } from './services/authService';
+
+await logout();
+// sessionStorage['simap_session'] is gone
+// db.usuarios, db.pagos, db.saldos are all empty
+```
+
+<Warning>
+  The local Dexie data is permanently cleared on logout. Ensure all pending sync records have been uploaded before calling `logout()`, or use `getPendingSyncCount()` to warn the user first.
+</Warning>
+
+---
+
+## `getSession()`
+
+Parses and returns the current session object from `sessionStorage`.
+
+```javascript
+function getSession(): Session | null
+```
+
+**Returns**
+
+The parsed `Session` object (see [Session object](#session-object)) if a valid session exists, or `null` if no session is stored or parsing fails.
+
+**Example**
+
+```javascript
+import { getSession } from './services/authService';
+
+const session = getSession();
+if (session) {
+  console.log(`Logged in as ${session.nombre} (${session.rol})`);
+}
+```
+
+---
+
+## `isAuthenticated()`
+
+Convenience helper that returns `true` when a valid session exists in `sessionStorage`.
+
+```javascript
+function isAuthenticated(): boolean
+```
+
+**Returns**
+
+`true` if `getSession()` returns a non-null value; `false` otherwise.
+
+**Example**
+
+```javascript
+import { isAuthenticated } from './services/authService';
+
+if (!isAuthenticated()) {
+  navigate('/login');
+}
+```
+
+---
+
+## `getHomeRoute(role)`
+
+Returns the default home route for a given role, as defined in the `ROLE_HOME` constant.
+
+```javascript
+function getHomeRoute(role: string): string
+```
+
+**Parameters**
+
+<ParamField path="role" type="string" required>
+  A role string: `'admin'` | `'cobrador'` | `'minsa'` | `'cliente'` | `'dev'`.
+</ParamField>
+
+**Returns**
+
+The route path string for that role, or `'/login'` if the role is unrecognized.
+
+| Role | Home route |
+|---|---|
+| `admin` | `/admin` |
+| `cobrador` | `/cobros` |
+| `minsa` | `/reporte` |
+| `cliente` | `/historial` |
+| `dev` | `/admin` |
+
+**Example**
+
+```javascript
+import { getHomeRoute, getSession } from './services/authService';
+
+const session = getSession();
+const homeRoute = getHomeRoute(session.rol);
+navigate(homeRoute); // e.g. "/cobros" for cobrador
+```
+
+---
+
+## `isRouteAllowed(role, path)`
+
+Checks whether a given role has permission to access a route. Used by the router's navigation guard to enforce RBAC on every page transition.
+
+```javascript
+function isRouteAllowed(role: string, path: string): boolean
+```
+
+**Parameters**
+
+<ParamField path="role" type="string" required>
+  The authenticated user's role string.
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  The target route path (e.g., `'/cobros'`, `'/admin/usuarios'`). Matching uses `String.startsWith`, so `/admin` grants access to `/admin/usuarios` and all sub-paths.
+</ParamField>
+
+**Returns**
+
+`true` if the role's allowed-routes list contains a prefix that matches `path`; `false` otherwise.
+
+**Rules object**
+
+```javascript
+const rules = {
+  admin:    ['/admin', '/puntos-admin'],
+  cobrador: ['/cobros', '/jornales', '/gastos', '/comisiones', '/reporte', '/foro', '/chat', '/mapa'],
+  minsa:    ['/reporte'],
+  cliente:  ['/historial', '/foro', '/chat'],
+  dev:      ['/admin'],
+};
+```
+
+**Example**
+
+```javascript
+import { isRouteAllowed } from './services/authService';
+
+isRouteAllowed('cobrador', '/cobros');         // true
+isRouteAllowed('cobrador', '/admin');          // false
+isRouteAllowed('cliente', '/historial');       // true
+isRouteAllowed('minsa', '/reporte');           // true
+isRouteAllowed('minsa', '/cobros');            // false
+isRouteAllowed('admin', '/puntos-admin');      // true
+isRouteAllowed('dev', '/admin/auditoria');     // true (startsWith '/admin')
+```
+
+---
+
+## `registerUser({ email, pass, nombre, sector })`
+
+Registers a new resident (cliente) account via Supabase Auth `signUp`, embedding `nombre` and `sector` as user metadata for profile creation.
+
+```javascript
+async function registerUser(options: {
+  email: string;
+  pass: string;
+  nombre: string;
+  sector: string;
+}): Promise<{ success: true } | { success: false; error: string }>
+```
+
+**Parameters**
+
+<ParamField path="email" type="string" required>
+  New user's email address. Trimmed before the Supabase call.
+</ParamField>
+
+<ParamField path="pass" type="string" required>
+  Plain-text password for the new account.
+</ParamField>
+
+<ParamField path="nombre" type="string" required>
+  Resident's full name or household name (e.g., `'Familia Moreno'`). Stored as Supabase user metadata.
+</ParamField>
+
+<ParamField path="sector" type="string" required>
+  Resident's sector or neighborhood (e.g., `'Caballero Centro'`). Stored as Supabase user metadata and used by `recoverByHouse`.
+</ParamField>
+
+**Returns**
+
+<ResponseField name="success" type="boolean">
+  `true` if Supabase signup completed without errors.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Populated only on failure. Contains the raw Supabase error message.
+</ResponseField>
+
+**Example**
+
+```javascript
+import { registerUser } from './services/authService';
+
+const result = await registerUser({
+  email: 'familia.moreno@gmail.com',
+  pass: 'aguasegura2025',
+  nombre: 'Familia Moreno',
+  sector: 'Caballero Centro',
+});
+
+if (result.success) {
+  console.log('Cuenta creada. Esperando aprobación de administrador.');
+} else {
+  console.error(result.error);
+}
+```
+
+<Note>
+  New accounts are created with `estado: 'pendiente'` in the Supabase `profiles` table and must be approved by an administrator before the resident can log in.
+</Note>
+
+---
+
+## `recoverByHouse(casa)`
+
+Looks up a resident's account by their sector name. Useful for helping residents who have forgotten their email address.
+
+```javascript
+async function recoverByHouse(casa: string): Promise<{ user: string; nombre: string } | null>
+```
+
+**Parameters**
+
+<ParamField path="casa" type="string" required>
+  Sector or neighborhood name to search by (e.g., `'Caballero Abajo'`). Performs an exact-match query on the Supabase `profiles.sector` column.
+</ParamField>
+
+**Returns**
+
+An object with the resident's email and name if found, or `null` if no profile matches the sector.
+
+<ResponseField name="user" type="string">
+  The resident's registered email address.
+</ResponseField>
+
+<ResponseField name="nombre" type="string">
+  The resident's display name.
+</ResponseField>
+
+**Example**
+
+```javascript
+import { recoverByHouse } from './services/authService';
+
+const found = await recoverByHouse('Caballero Abajo');
+if (found) {
+  console.log(`Cuenta encontrada: ${found.user} (${found.nombre})`);
+  // "Cuenta encontrada: familia.alonsos@gmail.com (Los Alonsos)"
+} else {
+  console.log('No se encontró ninguna cuenta para ese sector.');
+}
+```
+
+---
+
+## `registerJunta({ nombre_junta, ruc, admin_user, pass, email })`
+
+Registers a new water board (junta) and its administrator account in a single operation. Creates a Supabase Auth user with the `'admin'` role and inserts a new row into the `juntas` table with `estado: 'pendiente_global'` pending global platform approval.
+
+```javascript
+async function registerJunta(options: {
+  nombre_junta: string;
+  ruc: string;
+  admin_user: string;
+  pass: string;
+  email?: string;
+}): Promise<{ success: true } | { success: false; error: string }>
+```
+
+**Parameters**
+
+<ParamField path="nombre_junta" type="string" required>
+  Official name of the water board (e.g., `'Junta de Agua Caballero'`). Stored as Supabase user metadata `nombre` and inserted into `juntas.nombre`.
+</ParamField>
+
+<ParamField path="ruc" type="string" required>
+  RUC (Registro Único de Contribuyente) — the board's tax identification number. Stored in `juntas.ruc`.
+</ParamField>
+
+<ParamField path="admin_user" type="string" required>
+  Username or email for the board's admin account. Used as the Supabase Auth email if `email` is not provided (trimmed before use).
+</ParamField>
+
+<ParamField path="pass" type="string" required>
+  Password for the admin account.
+</ParamField>
+
+<ParamField path="email" type="string">
+  Optional explicit email address. If provided, takes precedence over `admin_user` as the Supabase Auth email.
+</ParamField>
+
+**Returns**
+
+<ResponseField name="success" type="boolean">
+  `true` if both the Auth user and the `juntas` record were created successfully.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Populated on failure. Returns the Supabase error message from whichever step failed (Auth signup or junta insert).
+</ResponseField>
+
+**Example**
+
+```javascript
+import { registerJunta } from './services/authService';
+
+const result = await registerJunta({
+  nombre_junta: 'Junta de Agua Caballero',
+  ruc: '2-123-456',
+  admin_user: 'admin_caballero',
+  pass: 'securepass2025',
+  email: 'junta.caballero@correo.pa',
+});
+
+if (result.success) {
+  console.log('Junta registrada. En espera de aprobación global.');
+} else {
+  console.error(result.error);
+}
+```
+
+<Note>
+  Newly registered juntas receive `estado: 'pendiente_global'` and must be approved by the SIMAP platform administrator before their admin can log in and configure board settings.
+</Note>

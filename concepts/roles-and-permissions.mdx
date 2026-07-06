@@ -1,0 +1,150 @@
+---
+title: "Roles and Permissions in SIMAP Digital"
+sidebarTitle: "Roles & Permissions"
+description: "SIMAP Digital has five roles — admin, cobrador, minsa, cliente, and dev — each with strictly separate route access enforced by authService."
+---
+
+## The five roles
+
+SIMAP Digital uses Role-Based Access Control (RBAC) with five distinct roles defined in `src/utils/constants.js`:
+
+```js
+export const ROLES = {
+  ADMIN:    'admin',
+  COBRADOR: 'cobrador',
+  MINSA:    'minsa',
+  CLIENTE:  'cliente',
+  DEV:      'dev',
+};
+```
+
+Each role represents a real stakeholder in a Panamanian rural water board (JAAR — *Junta Administradora de Acueductos Rurales*) and has access to a precisely scoped slice of the application.
+
+---
+
+## Role reference
+
+| Role | Home Route | Allowed Routes | Description |
+|------|-----------|----------------|-------------|
+| **admin** | `/admin` | `/admin`, `/puntos-admin` | Full system administrator. Manages user accounts, approves registrations, configures system settings, views audit logs, and manages the gamification points program. |
+| **cobrador** | `/cobros` | `/cobros`, `/jornales`, `/gastos`, `/comisiones`, `/reporte`, `/foro`, `/chat`, `/mapa` | Field collector / treasurer. Registers payments, logs community work jornales, records expenses, and generates reports — all operable offline. |
+| **minsa** | `/reporte` | `/reporte` | Ministry of Health inspector. Read-only access to financial and activity reports; can filter by date range and export to Excel/PDF. Cannot modify any data. |
+| **cliente** | `/historial` | `/historial`, `/foro`, `/chat` | Community member / water subscriber. Views their own personal payment history and reads community forum announcements. Cannot view other members' data. |
+| **dev** | `/admin` | `/admin` | Technical support. Lands on the admin panel but can **only** view the `Auditoría` (audit log) tab. Has no access to financial data or user management actions. |
+
+---
+
+## Route home constants
+
+After a successful login, each role is redirected to its home route as defined in `ROLE_HOME`:
+
+```js
+// src/utils/constants.js
+export const ROLE_HOME = {
+  admin:    '/admin',
+  cobrador: '/cobros',
+  minsa:    '/reporte',
+  cliente:  '/historial',
+  dev:      '/admin',   // Shows only the Auditoría tab
+};
+```
+
+`authService.getHomeRoute(role)` looks up this map and falls back to `/login` for unknown roles:
+
+```js
+export function getHomeRoute(role) {
+  return ROLE_HOME[role] || '/login';
+}
+```
+
+---
+
+## How route guards work
+
+Route authorization is enforced by `isRouteAllowed(role, path)` in `src/services/authService.js`. The function checks whether the current path **starts with** any of the role's permitted prefixes:
+
+```js
+// src/services/authService.js
+export function isRouteAllowed(role, path) {
+  const rules = {
+    admin:    ['/admin', '/puntos-admin'],
+    cobrador: ['/cobros', '/jornales', '/gastos', '/comisiones', '/reporte', '/foro', '/chat', '/mapa'],
+    minsa:    ['/reporte'],
+    cliente:  ['/historial', '/foro', '/chat'],
+    dev:      ['/admin'],
+  };
+  const allowed = rules[role] || [];
+  return allowed.some(r => path.startsWith(r));
+}
+```
+
+Using `startsWith` means a route like `/cobros/detalle/42` is correctly allowed for the `cobrador` role without needing to enumerate every sub-path explicitly.
+
+### The ProtectedRoute pattern
+
+In `App.jsx`, every authenticated route is wrapped in a `<ProtectedRoute>` component that calls `isRouteAllowed`. If the check fails, the user is redirected to their home route rather than shown a 404 or error page — this prevents role confusion on shared devices:
+
+```jsx
+// Conceptual pattern from App.jsx
+<Route
+  path="/jornales"
+  element={
+    <ProtectedRoute allowedRoles={['cobrador']}>
+      <JornalesPage />
+    </ProtectedRoute>
+  }
+/>
+```
+
+---
+
+## Account states
+
+A registered user can be in one of four account states. The state is stored in Supabase `profiles` and checked immediately after credential validation:
+
+| State | Description | Login result |
+|-------|-------------|--------------|
+| `pendiente` | Account submitted, awaiting admin approval | ⏳ Blocked — "Tu cuenta aún no ha sido aprobada." |
+| `activo` | Approved and active | ✅ Allowed — session created and sync initiated |
+| `rechazado` | Registration request was denied by admin | ❌ Blocked — "Tu solicitud fue rechazada." |
+| `suspendido` | Account suspended by admin (e.g. inactive subscriber) | ⚠️ Blocked — "Tu cuenta ha sido suspendida." |
+
+The check happens inside `login()` before the session is persisted:
+
+```js
+if (profile.estado === 'pendiente')   return { success: false, error: '⏳ Tu cuenta aún no ha sido aprobada.' };
+if (profile.estado === 'rechazado')   return { success: false, error: '❌ Tu solicitud fue rechazada.' };
+if (profile.estado === 'suspendido')  return { success: false, error: '⚠️ Tu cuenta ha sido suspendida.' };
+```
+
+---
+
+## Self-registration flow
+
+Community members can request their own accounts through the public `/registro` route (no login required). The registration flow follows these steps:
+
+<Steps>
+  <Step title="Self-registration">
+    The new member fills in their name, house number, desired username, and password at `/registro`. `registerUser()` calls `supabase.auth.signUp()` which creates the account in **`pendiente`** state.
+  </Step>
+  <Step title="Admin review">
+    The administrator logs in to `/admin` and sees the pending request in the **Pendientes** panel. They can approve, reject, or request more information.
+  </Step>
+  <Step title="Account activation">
+    The admin presses ✅ **Aprobar** — the profile's `estado` is updated to `activo` in Supabase. The new member can now log in and is redirected to `/historial`.
+  </Step>
+</Steps>
+
+---
+
+## B2B junta registration
+
+Water boards (juntas) wishing to onboard as organizations follow a separate path via `registerJunta()`. The junta record is created in Supabase with state `pendiente_global` pending review by the SIMAP platform super-admin, distinct from the per-junta admin approval flow.
+
+---
+
+<Warning>
+**The `dev` role does not have access to financial data.**
+
+Although `dev` shares `/admin` as its home route, it is intentionally scoped to the audit log (`Auditoría`) tab only. A developer with `dev` credentials cannot view payment records, member balances, expenses, or user personal information. If you need to inspect financial data during debugging, you must be granted explicit `admin` access by an authorized administrator — do not escalate the `dev` role.
+</Warning>

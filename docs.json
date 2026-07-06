@@ -1,72 +1,105 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "SIMAP Digital",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#8727fc",
+    "light": "#8c51fc",
+    "dark": "#8727fc"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  "favicon": "https://media.brand.dev/0be2f81a-cc2e-4b4a-b219-404fd5b2cc11.svg",
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/AdriP-maker/JAAR_Antigravity"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/AdriP-maker/JAAR_Antigravity"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/offline-first",
+              "concepts/roles-and-permissions",
+              "concepts/data-model"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Features",
+        "groups": [
+          {
+            "group": "Payments & Collections",
+            "pages": [
+              "features/cobros",
+              "features/payment-types",
+              "features/commissions"
+            ]
+          },
+          {
+            "group": "Community Management",
+            "pages": [
+              "features/jornales",
+              "features/gastos",
+              "features/foro"
+            ]
+          },
+          {
+            "group": "Gamification & AI",
+            "pages": [
+              "features/puntos",
+              "features/ai-routing",
+              "features/risk-scoring"
+            ]
+          },
+          {
+            "group": "Reports & Admin",
+            "pages": [
+              "features/reportes",
+              "features/admin-panel",
+              "features/sync"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Service API",
+            "pages": [
+              "reference/pagos-service",
+              "reference/puntos-service",
+              "reference/ai-service",
+              "reference/auth-service"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "reference/configuration",
+              "reference/database-schema"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

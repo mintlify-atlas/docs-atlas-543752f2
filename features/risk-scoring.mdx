@@ -1,0 +1,120 @@
+---
+title: "Household risk scoring and delinquency prediction in SIMAP"
+sidebarTitle: "Risk Scoring"
+description: "SIMAP Digital calculates a 0-100 risk score per household using five weighted factors and flags residents likely to miss their next payment."
+---
+
+## What the risk score measures
+
+SIMAP Digital assigns every household a numeric **risk score** — a single number that expresses how likely that household is to default on their next payment or fall further behind on an existing balance. The score is recalculated continuously as new payment, jornal, and sector data accumulates in the local store.
+
+The risk score is the backbone of two other AI features: it feeds directly into [AI Routing](/features/ai-routing) priority ordering, and it drives the delinquency prediction alerts described below. Crucially, **the score never changes what a household owes** — it only informs the people who manage collections.
+
+This feature is specified as **RF-22** in the SIMAP requirements document.
+
+---
+
+## Score range
+
+| Score | Meaning |
+|---|---|
+| **0** | No measurable risk — household is current on payments and active in community work |
+| **100** | Critical risk — household is deeply overdue and shows deteriorating patterns |
+
+---
+
+## The five risk factors
+
+The composite score is built from five independently weighted factors:
+
+| Factor | Weight | What it measures |
+|---|---|---|
+| Months without payment | **35%** | The single strongest predictor — how many consecutive months have gone unpaid |
+| Payment regularity | **25%** | Consistency of payments over the trailing 12 months; penalizes erratic payers even if currently up-to-date |
+| Jornal participation | **20%** | Community workday attendance rate; low participation correlates with disengagement and payment drift |
+| Sector risk | **10%** | Average delinquency rate of the household's geographic sector — area-level context |
+| Payment trend | **10%** | Direction of recent payment behavior — improving, stable, or worsening over the last 3 months |
+
+The weights sum to 100% and are defined in RF-22 of `docs/requisitos.md`.
+
+---
+
+## Risk levels
+
+The continuous 0–100 score is bucketed into four named levels for display throughout the UI:
+
+| Level | Score range | Badge color | Status label |
+|---|---|---|---|
+| **bajo** (low) | 0 – 25 | 🟢 Green | Household is current; no intervention needed |
+| **medio** (medium) | 26 – 50 | 🟡 Yellow | Monitor — early warning signs present |
+| **alto** (high) | 51 – 75 | 🟠 Orange | At risk — cobrador should prioritize visit |
+| **crítico** (critical) | 76 – 100 | 🔴 Red | Urgent — likely candidate for `corte` status |
+
+These levels map to the payment states defined in `src/utils/constants.js`:
+
+```js
+export const ESTADOS = {
+  ACTIVO:  'activo',   // risk bajo/medio — household is current
+  PARCIAL: 'parcial',  // partial payment on record
+  MOROSO:  'moroso',   // alto — 1–2 months overdue
+  CORTE:   'corte',    // crítico — 3+ months overdue, cut imminent
+};
+```
+
+---
+
+## Delinquency prediction (RF-24)
+
+Beyond measuring current delinquency, SIMAP Digital looks forward. The prediction engine scans all `activo` households — those technically current today — and identifies which ones show a **high probability of falling into `moroso` status next month**.
+
+The prediction model weighs:
+
+- **Historical payment trends** — a household that has been paying on the 28th each month is riskier than one that pays on the 5th, even if both are technically current
+- **Seasonal factors** — agricultural and school-year cycles in rural Panama create predictable periods of payment stress
+- **Community participation** — declining jornal attendance ahead of payment dates is an early behavioral signal
+
+When the model flags a household, the system surfaces an informational alert to the administrator. No automated action is taken — the cobrador is informed so they can prioritize a proactive visit or send an AI-generated reminder message before the payment window closes.
+
+<Note>
+  All risk scores and delinquency predictions are **informational only**. The system never automatically adjusts tariffs, applies penalties, or restricts service based on a predicted score. Every consequential decision — scheduling a visit, sending a message, initiating a service cut — requires a human action by the cobrador or administrator. This design is intentional and aligns with RF-24's specification that the system "shows informative alerts, does not adjust tariffs."
+</Note>
+
+---
+
+## Anomaly detection (RF-25)
+
+While risk scoring operates at the household level, anomaly detection operates at the **sector level**. The system applies **z-score statistical analysis** to sector-wide collection data to identify patterns that fall outside normal variance:
+
+| Anomaly type | Example signal |
+|---|---|
+| Sudden collection drop | A sector that normally yields B/.45/month records B/.12 — possible cobrador issue or community event |
+| Spending spike | A single-week expense cluster that deviates sharply from the trailing 3-month average |
+| Irregular payment cluster | An unusual number of partial or multi-month payments concentrated in one sector in a short window |
+
+When a z-score threshold is breached, an alert is pushed to the administrator's dashboard. The alert includes the affected sector, the observed value, the expected range, and the date range of the anomalous pattern. No automated corrective action is taken — the administrator investigates manually.
+
+---
+
+## The sector heatmap: MapaPage
+
+The risk data is visualized geographically on **MapaPage** (`/mapa`), accessible to the `admin` and `cobrador` roles. The page renders a heatmap of the water board's service area where each sector is colored according to its **average household risk score**:
+
+- 🟢 Green sectors — low average risk, collection is healthy
+- 🟡 Yellow sectors — moderate risk, worth monitoring
+- 🟠 Orange sectors — elevated risk, plan targeted collection visits
+- 🔴 Red sectors — critical, anomaly detection is likely also active here
+
+The heatmap updates each time the local database syncs, giving the administrator a current spatial picture of collection health across the entire service area.
+
+---
+
+## How risk data feeds AI routing
+
+The risk score is the primary input to the [AI Routing](/features/ai-routing) priority queue. When the cobrador activates **"Ruta IA"**, the routing engine:
+
+1. Reads the current risk score for every household on the cobrador's list
+2. Elevates households in `moroso` or `corte` state (urgency layer)
+3. Sorts by composite priority: `risk_score × urgency_weight`
+4. Clusters the resulting sorted list by geographic sector to minimize travel
+
+This means a household with a risk score of 82 (`crítico`) in sector "Caballero Centro" will appear before a score-40 household in the same sector, but both will be visited before the cobrador crosses to "Caballero Arriba" — balancing risk prioritization with route efficiency.

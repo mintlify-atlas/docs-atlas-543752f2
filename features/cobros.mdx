@@ -1,0 +1,162 @@
+---
+title: "Collections dashboard: managing resident payments in SIMAP"
+sidebarTitle: "Collections"
+description: "The CobrosPage lets collectors search residents, check payment status, apply filters, and register payments with full offline support via Dexie.js."
+---
+
+## Overview
+
+The **CobrosPage** (`/cobros`) is the primary workspace for the **cobrador** (collector/treasurer) role. It provides a real-time view of the entire community's payment standing, lets the cobrador search and filter residents, and opens the payment modal to record a collection — all without requiring an internet connection.
+
+When the device is offline, every action writes directly to [Dexie.js](https://dexie.org/) IndexedDB. A `pendingSync` queue keeps track of unsynced records so that when connectivity is restored, all data is automatically uploaded to Supabase in the background.
+
+---
+
+## Payment states
+
+Each resident (vecino) in the padrón carries one of four payment states. The state is computed dynamically by `calcularEstado()` in `pagosService.js` and updated on every visit to the page.
+
+| State key | Display label | Badge variant | Trigger |
+|-----------|---------------|---------------|---------|
+| `activo` | ✅ Al Día | `success` | Current month fully paid, no prior debt |
+| `parcial` | 🟡 Parcial | `warning` | Current month partially paid (saldo > 0) |
+| `moroso` | ⚠️ Moroso | `warning` | 1–2 consecutive months unpaid |
+| `corte` | 🔴 Corte | `danger` | 3 or more consecutive months unpaid (cutoff risk) |
+
+These labels and variants come directly from `ESTADO_LABELS` in `src/utils/constants.js`:
+
+```js
+export const ESTADO_LABELS = {
+  activo:  { text: '✅ Al Día', variant: 'success' },
+  parcial: { text: '🟡 Parcial', variant: 'warning' },
+  moroso:  { text: '⚠️ Moroso', variant: 'warning' },
+  corte:   { text: '🔴 Corte',  variant: 'danger'  },
+};
+```
+
+<Note>
+  The threshold for `corte` is controlled by `DEFAULT_CONFIG.mesesGraciaCorte` (default **3**). An admin can adjust this value via the ConfigPage without a code change.
+</Note>
+
+---
+
+## KPI grid
+
+At the top of the page, `KPIGrid` renders four at-a-glance metrics derived from the enriched user list:
+
+| KPI card | Icon | What it measures |
+|----------|------|-----------------|
+| **Recaudo** | 📊 | Percentage of residents currently `activo` (e.g. `72%`) |
+| **En Riesgo** | ⚠️ | Count of residents in `moroso` or `corte` state |
+| **Alertas** | 🔔 | Count of residents specifically in `corte` (imminent cutoff) |
+| **Pendientes** | 📤 | Number of records in the `pendingSync` queue awaiting upload |
+
+The metrics are recalculated every time the cobrador completes a payment (`handlePagoComplete` increments a `refreshKey` that triggers `enrichUsers()`).
+
+---
+
+## FilterBar
+
+Below the KPI grid, the **FilterBar** lets the cobrador narrow the resident list before starting rounds:
+
+- **Search box** — filters by resident name or sector (case-insensitive, real-time).
+- **Month selector** — Enero through Diciembre (`MESES` array from `constants.js`), defaults to the current month.
+- **State selector** — filters to a single payment state (`activo`, `parcial`, `moroso`, or `corte`). Leave blank to show all.
+- **Ruta Inteligente toggle** — activates the AI-powered visit order (see the Tip below).
+
+---
+
+## UserCard
+
+Each resident is rendered as a **UserCard** showing:
+
+- **Nombre** — the resident's full name (e.g. `Familia Moreno`)
+- **Sector** — their geographic zone (e.g. `Caballero Centro`)
+- **Estado badge** — color-coded badge matching `ESTADO_LABELS`
+- **mesesSinPagar** — number of consecutive months without a complete payment
+- **Deuda** — total outstanding balance in Balboas (B/.)
+- **Adelantados** — number of future months already paid in advance
+- **Cobrar button** — opens `CobroModal` pre-loaded with that resident's data
+- **AI Suggest button** — calls `getSugerenciaCobrador()` and shows a contextual message the cobrador can forward to the resident via the in-app notification system
+
+---
+
+## CobroModal: registering a payment
+
+The **CobroModal** opens as a slide-up sheet on mobile. It is pre-loaded with the resident's current balance summary (`getResumenUsuario()`) and the active tariff configuration (`getPaymentConfig()`).
+
+### Payment type tabs
+
+The modal exposes five tabs (a subset of the six full payment types — `adelanto` is handled via `multi_mes` for future months):
+
+| Tab label | Key | Sub-label shown |
+|-----------|-----|----------------|
+| Mensual | `mensual` | B/.3.00 |
+| Diario | `diario` | B/.0.10 |
+| Varios | `multi_mes` | Meses |
+| Pago | `parcial` | Parcial |
+| Poner | `puesta_al_dia` | al Día |
+
+Each tab reveals a type-specific panel with the relevant inputs (days, months, or custom amount). The **total amount** updates in real time as values change.
+
+### Points discount
+
+If the resident has accumulated SIMAP Points, the modal displays their balance and a **"Usar puntos"** checkbox. Checking it applies a discount (1 point = B/.0.10, max B/.1.50/month) to the total shown on screen — but the commission is always calculated on the full tariff.
+
+### File attachment
+
+The cobrador can attach a photo or PDF receipt (`image/*`, `.pdf`). The file is hashed with SHA-256 (`generateFileHash()`), stored in the `archivos` IndexedDB table, and a reference is appended to the payment note.
+
+---
+
+## Collection flow
+
+<Steps>
+  <Step title="Search the resident">
+    Type the resident's name or sector into the search box on CobrosPage. The list filters instantly from the local IndexedDB — no network required.
+  </Step>
+
+  <Step title="Check payment status">
+    Review the estado badge and mesesSinPagar on the UserCard. A 🔴 Corte badge means the resident has 3+ months overdue; prioritize this visit.
+  </Step>
+
+  <Step title="Open the payment modal">
+    Press the **Cobrar** button on the UserCard. CobroModal opens and fetches the resident's full balance summary.
+  </Step>
+
+  <Step title="Select a payment type">
+    Choose the appropriate tab — **Mensual** for a standard monthly quota, **Puesta al Día** to clear all arrears at once, or any other type. The amount auto-calculates.
+  </Step>
+
+  <Step title="Apply optional points or note">
+    If the resident wants to redeem accumulated points, toggle **Usar puntos**. Add a short note and optionally attach a receipt photo.
+  </Step>
+
+  <Step title="Confirm the payment">
+    Press **Confirmar Cobro**. `registrarPago()` writes the payment record to the `pagos` table and a matching entry to the `pendingSync` table — both atomically.
+  </Step>
+
+  <Step title="Receipt generated, state refreshed">
+    A toast notification confirms the amount (e.g. `"Cobro de B/.3.00 registrado ✅"`). The UserCard badge updates to ✅ Al Día and the KPI grid recalculates.
+  </Step>
+</Steps>
+
+---
+
+## Offline behavior
+
+SIMAP Digital is built **offline-first**. When there is no network connection:
+
+1. `registrarPago()` writes the payment to the **`pagos`** table in IndexedDB.
+2. A companion record is written to **`pendingSync`** with `type: 'pago'` and an ISO timestamp.
+3. The header shows a **"Sin Red"** indicator.
+4. The **Pendientes** KPI card counts how many records are waiting.
+5. When connectivity returns, pressing **Sincronizar** flushes the `pendingSync` queue to Supabase and calls `clearPendingSync()` on success.
+
+No data is ever lost between network outages.
+
+---
+
+<Tip>
+  Use the **Ruta Inteligente** button in the FilterBar before heading out on collection rounds. The AI service (`getSugerenciaCobrador`) reorders the resident list by risk score and geographic sector, so you visit the most critical households first and minimize travel between zones.
+</Tip>

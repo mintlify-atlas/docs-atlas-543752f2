@@ -1,0 +1,180 @@
+---
+title: "Jornales: tracking community work days in SIMAP Digital"
+sidebarTitle: "Jornales"
+description: "The Jornales module lets collectors record community work attendance, substitutes, hours, and fines for absences — all offline, synced later."
+---
+
+## What is a jornal?
+
+A **jornal** is a mandatory community work day organized by the water board (*junta directiva*). Every registered household is expected to participate — either attending in person, sending a qualified substitute, or accepting a fine for absence. Jornales cover tasks like cleaning the water intake (*toma de agua*), repairing pipelines, clearing vegetation around infrastructure, and painting community facilities.
+
+The jornales system ensures equitable participation from all members of the water community and generates a paper trail that can appear in MINSA audit reports.
+
+---
+
+## Who uses this page?
+
+| Role | Access | Can record? |
+|------|--------|-------------|
+| `cobrador` | `/jornales` | ✅ Yes |
+| `admin` | `/jornales` | ✅ Yes |
+| `cliente` | `/historial` | 🔍 View own records only |
+| `minsa` | `/reporte` | 🔍 Read in reports only |
+
+The cobrador carries the device to the jornal site and records attendance on the spot, whether online or offline.
+
+---
+
+## Data recorded per jornal entry
+
+Each record written to `db.jornales` contains the following fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Auto-generated ID with prefix `jor-` (via `generateId`) |
+| `miembroId` | `string` | ID of the household member being recorded |
+| `fecha` | `string` | Date of the jornal (`YYYY-MM-DD`) |
+| `asiste` | `'si'` \| `'no'` | Whether the household participated |
+| `quien` | `'titular'` \| `'sustituto'` \| `null` | Who physically attended (null if absent) |
+| `suplente_nombre` | `string` | Full name of the substitute (when `quien === 'sustituto'`) |
+| `suplente_cedula` | `string` | National ID (*cédula*) of the substitute |
+| `multa` | `number` | Fine in balboas applied on absence (default B/.10.00) |
+| `horas` | `number` | Hours contributed (default 4, range 1–12) |
+| `timestamp` | `string` | ISO timestamp of when the record was created |
+
+---
+
+## The three attendance states
+
+### 1. Asiste — personal attendance (`asiste: 'si'`, `quien: 'titular'`)
+
+The household member attended in person. The cobrador records the hours worked (default 4 hours). This is the highest-value participation for the points system.
+
+### 2. Mandó a un sustituto — sent a substitute (`asiste: 'si'`, `quien: 'sustituto'`)
+
+The member could not attend but sent a substitute (a family member or a third party). The cobrador records:
+- The substitute's **full name** (`suplente_nombre`)
+- The substitute's **cédula** (`suplente_cedula`)
+- Hours worked
+
+The household still earns partial participation credit. No fine is applied.
+
+### 3. No asiste — absent, fine applied (`asiste: 'no'`)
+
+The member did not participate and sent no substitute. A fine panel appears in red and the cobrador confirms the fine amount (default **B/.10.00**, adjustable per event). The note in the UI reads:
+
+> *"Esta multa se sumará a la deuda de agua de este vecino."*
+
+The fine is stored in the `multa` field and surfaces in the MINSA egresos report for the corresponding period.
+
+---
+
+## Points awarded via `puntosService`
+
+The gamification engine (`puntosService.js`) calls `otorgarPuntos(usuarioId, cantidad, motivo)` which writes to `db.puntos_historial`. Jornal-related point rules (from RF-19):
+
+| Attendance type | Points awarded |
+|-----------------|---------------|
+| Personal attendance (`titular`) | **8 pts** |
+| Attendance via substitute | **3 pts** |
+| Confirmed attendance in advance | **2 pts** |
+| Full quarter with no jornal fines | **15 pts** |
+
+Points accumulate in `db.puntos_historial` under `tipo_transaccion: 'ganancia'` and can be redeemed for discounts on water dues (1 point = B/.0.01, max B/.1.50/month).
+
+---
+
+## Scenario: registering a substitute (Sustituto)
+
+> **Context:** Vecina Ana cannot attend the jornal and sends her son Carlos in her place.
+
+<Steps>
+  <Step title="Open the Jornales page">
+    The cobrador navigates to `/jornales`. The page loads from `db.jornales` — no internet required.
+  </Step>
+  <Step title="Select the member">
+    From the **Vecino / Miembro** dropdown, select **Ana** (e.g. *Sanchez Maylene — Caballero Centro*). The list is sourced from `db.usuarios`.
+  </Step>
+  <Step title="Set the attendance status to 'Sí asiste'">
+    In the **¿Asistió a la Jornada?** selector, choose **✅ Sí asistió**. The attendance panel expands.
+  </Step>
+  <Step title="Set 'Quién fue' to Sustituto">
+    In the **¿Quién fue?** selector, switch from *Titular* to **Sustituto (Familiar/Tercero)**. The substitute fields slide in.
+  </Step>
+  <Step title="Enter the substitute's details">
+    Fill in:
+    - **Nombre del Suplente:** `Carlos García`
+    - **Cédula del Suplente:** `8-XXX-XXXX`
+  </Step>
+  <Step title="Record hours and submit">
+    Confirm hours worked (default 4) and press **Registrar Asistencia**. The record is saved locally as:
+    ```
+    Ana García — Sustituto: Carlos García — 4 Hrs
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Scenario: registering an absence with a fine (Inasistencia con Multa)
+
+> **Context:** Vecino Pedro did not attend the mandatory jornal.
+
+<Steps>
+  <Step title="Select the absent member">
+    From the **Vecino / Miembro** dropdown, select **Pedro**.
+  </Step>
+  <Step title="Mark as 'No asiste'">
+    In **¿Asistió a la Jornada?**, choose **❌ No asistió (Multa)**. The red fine panel appears.
+  </Step>
+  <Step title="Confirm or adjust the fine">
+    The **Multa aplicable (B/.)** field defaults to **10.00**. Adjust if the board approved a different amount for this event.
+  </Step>
+  <Step title="Save the record">
+    Press **Registrar Asistencia**. The record is written to `db.jornales` with `asiste: 'no'` and the fine stored in the `multa` field:
+    ```
+    Pedro Sánchez — Faltó (−B/.10.00)
+    ```
+  </Step>
+  <Step title="Fine appears in MINSA report">
+    When the MINSA inspector generates the quarterly report from `/reporte`, the fine appears in the **Jornales** sheet of the exported `.xlsx` file under the corresponding period.
+  </Step>
+</Steps>
+
+---
+
+## Offline behavior
+
+The Jornales page is fully functional without internet. When `registerJornal()` is called:
+
+1. A new record is added to **`db.jornales`** (Dexie.js / IndexedDB) immediately.
+2. A corresponding task is queued in **`db.pendingSync`** with `type: 'ADD_JORNAL'` and the full record payload.
+3. The UI reflects the new entry instantly via `useLiveQuery(() => db.jornales.orderBy('fecha').reverse().toArray())`.
+
+When connectivity is restored, `syncService` drains the `pendingSync` queue and uploads records to Supabase.
+
+```js
+// From jornalesService.js — the sync task queued on save
+await db.pendingSync.add({
+  type: 'ADD_JORNAL',
+  payload: record,
+  timestamp: new Date().getTime(),
+});
+```
+
+<Note>
+  The header shows a **"Sin Red"** indicator while offline. The cobrador can complete an entire jornal session in the field and sync all attendance records in bulk when they return to a connected area.
+</Note>
+
+---
+
+## How jornal fines appear in MINSA reports
+
+When the MINSA inspector (or admin) exports the quarterly report from `/reporte`, the system reads all jornal records for the selected date range. Fines (`multa > 0`) are included in the **Jornales** sheet of the Excel workbook (`Reporte_SIMAP_YYYY-MM-DD.xlsx`), showing:
+
+- Member name
+- Jornal date
+- Fine amount in balboas
+- Attendance status
+
+This data feeds into the transparency requirements established by the Ministerio de Salud (MINSA) and helps demonstrate community participation levels during inspections.

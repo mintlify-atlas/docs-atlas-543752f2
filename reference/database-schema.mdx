@@ -1,0 +1,493 @@
+---
+title: "SIMAP Digital database schema and Supabase migration"
+sidebarTitle: "Database Schema"
+description: "Full schema reference for SIMAP Digital's IndexedDB tables (Dexie.js) and the Supabase PostgreSQL migration that backs the cloud sync layer."
+---
+
+SIMAP Digital uses a **dual-database architecture**:
+
+1. **IndexedDB (via Dexie.js)** — the local, offline-first source of truth living in the user's browser. Every read and write in the application hits IndexedDB first.
+2. **Supabase (PostgreSQL)** — the cloud sync target. Records queued in `pendingSync` are pushed to Supabase whenever the device has an internet connection.
+
+The two schemas mirror each other structurally. IndexedDB uses integer auto-increment keys and stores all data as JavaScript objects; Supabase uses UUID primary keys and PostgreSQL types.
+
+---
+
+## IndexedDB Schema (Dexie.js)
+
+The database is opened under the name **`SIMAPDigital`** and is defined across six sequential schema versions. Dexie applies migrations incrementally — adding a version only ever adds new tables or new indexes; existing data is never destroyed during an upgrade.
+
+### Complete Table Inventory
+
+| Table | Version introduced | Primary key | Indexed fields | Purpose |
+|-------|--------------------|-------------|----------------|---------|
+| `usuarios` | 1 | `++id` (auto-int) | `nombre`, `sector` | Registered community households / residents |
+| `pagos` | 1 | `++idPago` (auto-int) | `usuarioId`, `tipo`, `mesTarget`, `fecha` | Payment transaction ledger |
+| `saldos` | 1 | `[usuarioId+mes]` (composite) | `estado` | Per-household monthly balance entries |
+| `gastos` | 1 | `++id` (auto-int) | `fecha` | Board expenses and purchases |
+| `jornales` | 1 | `++id` (auto-int) | `miembroId`, `fecha` | Community work session attendance |
+| `pendingSync` | 1 | `++id` (auto-int) | `type`, `timestamp` | Outbound cloud sync queue |
+| `config` | 1 | `key` (string) | — | System configuration key-value store |
+| `registeredUsers` | 1 | `user` (string) | `rol`, `estado` | Local login accounts (RBAC) |
+| `foro` | 2 | `++id` (auto-int) | `fecha`, `autor` | Community notice board posts |
+| `juntas` | 3 | `++id` (auto-int) | `nombre`, `ruc`, `estado` | Water board entity registry (B2B) |
+| `auditoria` | 3 | `++id` (auto-int) | `timestamp`, `accion`, `user_id`, `afectado_id` | Immutable audit log |
+| `archivos` | 3 | `++id` (auto-int) | `pagoId`, `fileHash`, `fileName` | Payment receipt file metadata |
+| `puntos_historial` | 4 | `++id` (auto-int) | `usuarioId`, `fecha`, `tipo_transaccion` | Loyalty points transaction history |
+| `notificaciones` | 5 | `++id` (auto-int) | `usuarioId`, `fecha`, `leido` | In-app notifications per user |
+| `mensajes` | 6 | `++id` (auto-int) | `conversacionId`, `de`, `para`, `fecha`, `leido` | Direct messages between users |
+
+### Dexie Version Definitions
+
+The full schema as written in `src/services/db.js`:
+
+```js
+import Dexie from 'dexie';
+import { DEMO_USERS, DEMO_GASTOS, DEFAULT_CONFIG } from '../utils/constants';
+
+export const db = new Dexie('SIMAPDigital');
+
+// ── Version 1: Core tables ────────────────────────────────────────────────────
+db.version(1).stores({
+  usuarios:      '++id, nombre, sector',
+  pagos:         '++idPago, usuarioId, tipo, mesTarget, fecha',
+  saldos:        '[usuarioId+mes], estado',
+  gastos:        '++id, fecha',
+  jornales:      '++id, miembroId, fecha',
+  pendingSync:   '++id, type, timestamp',
+  config:        'key',
+  registeredUsers: 'user, rol, estado',
+});
+
+// ── Version 2: Community forum ────────────────────────────────────────────────
+db.version(2).stores({
+  foro: '++id, fecha, autor',
+});
+
+// ── Version 3: B2B, audit trail, and file storage ─────────────────────────────
+db.version(3).stores({
+  juntas:    '++id, nombre, ruc, estado',
+  auditoria: '++id, timestamp, accion, user_id, afectado_id',
+  archivos:  '++id, pagoId, fileHash, fileName',
+});
+
+// ── Version 4: Loyalty points ─────────────────────────────────────────────────
+db.version(4).stores({
+  puntos_historial: '++id, usuarioId, fecha, tipo_transaccion',
+});
+
+// ── Version 5: Notifications ──────────────────────────────────────────────────
+db.version(5).stores({
+  notificaciones: '++id, usuarioId, fecha, leido',
+});
+
+// ── Version 6: Messaging ──────────────────────────────────────────────────────
+db.version(6).stores({
+  mensajes: '++id, conversacionId, de, para, fecha, leido',
+});
+```
+
+<Note>
+  Dexie's store syntax only lists **indexed** fields — not every property of the stored object. You may store additional unindexed fields on any record; they are persisted but cannot be used in `where()` queries. For example, `pagos` records carry a `monto` (amount) field that is not indexed because payments are always retrieved by `usuarioId` or `mesTarget`, never filtered by amount alone.
+</Note>
+
+### Table Field Descriptions
+
+#### `usuarios` — Resident records
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | auto-int PK | Auto-incrementing local identifier |
+| `nombre` | string | Full household or family name (e.g. `'Sanchez Maylene'`) |
+| `sector` | string | Geographic sector within the community (e.g. `'Caballero Centro'`) |
+| `pagadoEsteMes` | boolean | Denormalised flag: whether the household paid in the current month |
+| `mesesSinPagar` | number | Cached count of consecutive unpaid months; drives `estado` transitions |
+
+#### `pagos` — Payment transactions
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `idPago` | auto-int PK | Auto-incrementing payment identifier |
+| `usuarioId` | number FK → `usuarios.id` | Household that made the payment |
+| `tipo` | string | Payment type (see `TIPOS_PAGO` constants) |
+| `mesTarget` | string | Target month in `'YYYY-MM'` format |
+| `fecha` | string/date | Date the payment was recorded |
+| `monto` | number | Amount paid in balboas (B/.) |
+
+Accepted values for `tipo` (defined in `src/utils/constants.js`):
+
+| Value | Label | Meaning |
+|-------|-------|---------|
+| `mensual` | Cuota Mensual | Standard full monthly quota |
+| `diario` | Pago Diario | Day-rate payment (partial period) |
+| `multi_mes` | Multi-Mes | Single payment covering multiple months |
+| `parcial` | Parcial | Partial payment; requires `permitirParciales: true` in config |
+| `adelanto` | Adelanto | Advance payment for future months |
+| `puesta_al_dia` | Puesta al Día | Catch-up payment clearing outstanding debt |
+
+#### `saldos` — Balance ledger
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `[usuarioId+mes]` | composite PK | Compound key: household ID + month string |
+| `usuarioId` | number | References `usuarios.id` |
+| `mes` | string | Month in `'YYYY-MM'` format |
+| `estado` | string | Payment status for this household/month pair |
+
+Accepted values for `estado` (defined in `src/utils/constants.js`):
+
+| Value | Label | Meaning |
+|-------|-------|---------|
+| `activo` | ✅ Al Día | Fully paid for the period |
+| `parcial` | 🟡 Parcial | Partially paid; outstanding balance remains |
+| `moroso` | ⚠️ Moroso | 1–2 consecutive months unpaid |
+| `corte` | 🔴 Corte | ≥ `mesesGraciaCorte` consecutive months unpaid; service cut-off |
+
+#### `pendingSync` — Cloud sync queue
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | auto-int PK | Queue entry identifier |
+| `type` | string | Operation type, e.g. `'pago'`, `'gasto'`, `'jornal'` |
+| `data` | object | Full serialised record to push to Supabase |
+| `timestamp` | number | `Date.now()` when the entry was enqueued |
+
+#### `config` — System configuration
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `key` | string PK | Configuration namespace (e.g. `'general'`, `'ls_migrated'`) |
+| `...fields` | mixed | Flattened config fields stored alongside `key` on the same record |
+
+The `'general'` row holds `cuotaMensual`, `permitirParciales`, and `mesesGraciaCorte`. See [Runtime System Config](/reference/configuration#runtime-system-config-default_config) for the full field reference.
+
+#### `registeredUsers` — Login accounts
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `user` | string PK | Username (login identifier) |
+| `pass` | string | Password (hashed in production; plaintext in demo seeds) |
+| `rol` | string | Role: `admin`, `cobrador`, `minsa`, `cliente`, or `dev` |
+| `nombre` | string | Display name |
+| `estado` | string | Account state: `'activo'` or `'inactivo'` |
+
+#### `auditoria` — Audit log
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | auto-int PK | Log entry identifier |
+| `timestamp` | number/date | When the action occurred |
+| `accion` | string | Human-readable action label (e.g. `'PAGO_REGISTRADO'`) |
+| `user_id` | string | Username of the actor |
+| `afectado_id` | number | Primary key of the record that was affected |
+
+#### `archivos` — Payment receipt metadata
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | auto-int PK | File record identifier |
+| `pagoId` | number FK → `pagos.idPago` | Payment this receipt belongs to |
+| `fileHash` | string | SHA-256 hex digest of the uploaded file (computed client-side before upload) |
+| `fileName` | string | Original filename |
+
+---
+
+## Supabase Migration (`00001_init.sql`)
+
+The file `supabase/migrations/00001_init.sql` creates the entire cloud schema in a single migration. It is applied by running `supabase db push` (or via the Supabase dashboard's SQL editor for manual setup).
+
+### `profiles` — Extended auth user data
+
+```sql
+-- Enable UUID generation
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Extends auth.users with app-specific fields
+CREATE TABLE profiles (
+  id         UUID REFERENCES auth.users(id) PRIMARY KEY,
+  email      TEXT UNIQUE NOT NULL,
+  nombre     TEXT,
+  rol        TEXT DEFAULT 'user',
+  estado     TEXT DEFAULT 'activo',
+  sector     TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+```
+
+`profiles` is the bridge between Supabase Auth and the application's RBAC system. When a user signs up, the `on_auth_user_created` trigger (see below) automatically inserts a matching `profiles` row, copying `email` and the `nombre` value from `raw_user_meta_data`. The application then reads `profiles.rol` to determine which routes and UI sections are accessible.
+
+**Auth → profiles relationship:**
+
+```
+auth.users (managed by Supabase Auth)
+    │  id (UUID)
+    │  email
+    │  raw_user_meta_data → { "nombre": "..." }
+    │
+    └─── profiles (application layer)
+             id  ── references auth.users(id)
+             rol ── drives RBAC in the React app
+             estado ── 'activo' | 'inactivo'
+```
+
+### Automatic profile creation trigger
+
+```sql
+-- Function called on every new sign-up
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger AS $$
+BEGIN
+  INSERT INTO public.profiles (id, email, nombre, rol, estado)
+  VALUES (
+    new.id,
+    new.email,
+    new.raw_user_meta_data->>'nombre',
+    'user',
+    'activo'
+  );
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Bind the function to auth.users INSERT events
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+```
+
+The trigger runs with `SECURITY DEFINER`, meaning it executes as the function owner (a Postgres superuser role) rather than the signing-up user. This is required because `auth.users` is in a restricted schema that the `anon` role cannot write to directly.
+
+### Core application tables
+
+```sql
+-- Community households / water service subscribers
+CREATE TABLE usuarios (
+  id         UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  nombre     TEXT NOT NULL,
+  sector     TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Payment transactions
+CREATE TABLE pagos (
+  id_pago    UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  usuario_id UUID REFERENCES usuarios(id) ON DELETE CASCADE,
+  tipo       TEXT NOT NULL,
+  mes_target TEXT NOT NULL,         -- 'YYYY-MM'
+  fecha      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  monto      DECIMAL(10, 2),
+  estado     TEXT DEFAULT 'completado'
+);
+
+-- Monthly balance ledger (mirrors IndexedDB composite key)
+CREATE TABLE saldos (
+  id         UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  usuario_id UUID REFERENCES usuarios(id) ON DELETE CASCADE,
+  mes        TEXT NOT NULL,         -- 'YYYY-MM'
+  estado     TEXT NOT NULL,
+  UNIQUE(usuario_id, mes)           -- enforces one saldo per household per month
+);
+
+-- Board expenses
+CREATE TABLE gastos (
+  id          UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  descripcion TEXT NOT NULL,
+  monto       DECIMAL(10, 2) NOT NULL,
+  fecha       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  categoria   TEXT
+);
+
+-- Community work session attendance
+CREATE TABLE jornales (
+  id          UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  miembro_id  UUID REFERENCES usuarios(id) ON DELETE CASCADE,
+  fecha       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  descripcion TEXT,
+  horas       INT
+);
+```
+
+### Collaboration and audit tables
+
+```sql
+-- Community notice board
+CREATE TABLE foro (
+  id        UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  fecha     TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  autor     UUID REFERENCES auth.users(id),
+  contenido TEXT NOT NULL
+);
+
+-- Water board entity registry
+CREATE TABLE juntas (
+  id     UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  nombre TEXT NOT NULL,
+  ruc    TEXT,
+  estado TEXT DEFAULT 'activo'
+);
+
+-- Immutable audit log (every critical write appends a row here)
+CREATE TABLE auditoria (
+  id          UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  timestamp   TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  accion      TEXT NOT NULL,
+  user_id     UUID REFERENCES auth.users(id),
+  afectado_id UUID,
+  detalles    JSONB    -- arbitrary structured context
+);
+
+-- Payment receipt metadata and integrity hashes
+CREATE TABLE archivos (
+  id         UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  pago_id    UUID REFERENCES pagos(id_pago) ON DELETE CASCADE,
+  file_hash  TEXT,    -- SHA-256 hex digest
+  file_name  TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Loyalty points ledger
+CREATE TABLE puntos_historial (
+  id                UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  usuario_id        UUID REFERENCES usuarios(id) ON DELETE CASCADE,
+  fecha             TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  tipo_transaccion  TEXT NOT NULL,
+  puntos            INT NOT NULL
+);
+
+-- In-app notifications
+CREATE TABLE notificaciones (
+  id         UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  usuario_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  fecha      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  mensaje    TEXT NOT NULL,
+  leido      BOOLEAN DEFAULT FALSE
+);
+
+-- Direct messages between users
+CREATE TABLE mensajes (
+  id              UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  conversacion_id TEXT NOT NULL,
+  de              UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  para            UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  fecha           TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  contenido       TEXT NOT NULL,
+  leido           BOOLEAN DEFAULT FALSE
+);
+```
+
+### Row Level Security (RLS)
+
+RLS is enabled on every table. The migration ships with permissive baseline policies that allow any authenticated user to read and write most operational data. **These policies should be tightened before a production rollout** to enforce role-based access (matching the `ROLES` constants in `src/utils/constants.js`).
+
+Personal data tables (`notificaciones`, `mensajes`) already enforce owner-only access:
+
+```sql
+-- Notifications: only the recipient can read or update
+CREATE POLICY "Users can view their notifications"
+  ON notificaciones FOR SELECT USING (auth.uid() = usuario_id);
+CREATE POLICY "Users can update their notifications"
+  ON notificaciones FOR UPDATE USING (auth.uid() = usuario_id);
+
+-- Messages: only sender or recipient can read; only sender can insert
+CREATE POLICY "Users can view their messages"
+  ON mensajes FOR SELECT USING (auth.uid() = de OR auth.uid() = para);
+CREATE POLICY "Users can insert messages"
+  ON mensajes FOR INSERT WITH CHECK (auth.uid() = de);
+```
+
+### Realtime subscriptions
+
+`mensajes` and `notificaciones` are added to the Supabase Realtime publication so the React client can subscribe to live updates without polling:
+
+```sql
+ALTER PUBLICATION supabase_realtime ADD TABLE mensajes;
+ALTER PUBLICATION supabase_realtime ADD TABLE notificaciones;
+```
+
+---
+
+## Key Data Patterns
+
+### Saldo composite key
+
+The `saldos` table uses a **compound primary key** of `[usuarioId + mes]`, where `mes` is always a `'YYYY-MM'` string (e.g. `'2024-03'`). This guarantees exactly one balance record per household per calendar month and allows efficient range queries:
+
+```js
+// Fetch all saldo records for a household in a date range
+const records = await db.saldos
+  .where('[usuarioId+mes]')
+  .between([uid, '2024-01'], [uid, '2024-12'], true, true)
+  .toArray();
+```
+
+In the Supabase PostgreSQL mirror, the equivalent constraint is `UNIQUE(usuario_id, mes)`.
+
+### Soft-delete pattern
+
+**Never issue a `DELETE` on the `usuarios` table.** Removing a household record would cascade-delete all associated `pagos` and `saldos`, destroying the payment history. Instead, set the household's `estado` to `'inactivo'`:
+
+```js
+// ✅ Correct — soft delete
+await db.usuarios.update(id, { estado: 'inactivo' });
+
+// ❌ Wrong — destroys payment history
+await db.usuarios.delete(id);
+```
+
+Inactive households are filtered from the cobros (collections) list but remain visible in historical reports.
+
+### Pending sync queue
+
+Every write that should eventually reach Supabase must enqueue a corresponding entry in `pendingSync`:
+
+```js
+// Record a payment locally and queue it for cloud sync
+await db.transaction('rw', db.pagos, db.pendingSync, async () => {
+  const idPago = await db.pagos.add(newPago);
+  await db.pendingSync.add({
+    type: 'pago',
+    data: { ...newPago, idPago },
+    timestamp: Date.now(),
+  });
+});
+```
+
+The sync service listens for browser `online` events, reads all rows from `pendingSync`, pushes them to Supabase in order of `timestamp`, and removes each entry after a successful `201` response.
+
+### Audit log
+
+Every action classified as critical (payment registration, user approval, config change, etc.) must append a row to `auditoria`:
+
+```js
+await db.auditoria.add({
+  timestamp: new Date().toISOString(),
+  accion:      'PAGO_REGISTRADO',
+  user_id:     currentUser,
+  afectado_id: idPago,
+});
+```
+
+Audit records are **never deleted or updated**. They provide a tamper-evident trail for MINSA inspections and internal accountability.
+
+### File integrity with SHA-256
+
+Before uploading a payment receipt to Supabase Storage, the client computes a SHA-256 digest of the file using the Web Crypto API and stores it in `archivos.fileHash`:
+
+```js
+async function hashFile(file) {
+  const buffer = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+const hash = await hashFile(receiptFile);
+await db.archivos.add({
+  pagoId:   idPago,
+  fileHash: hash,
+  fileName: receiptFile.name,
+});
+```
+
+On retrieval, the hash can be recomputed and compared to `archivos.fileHash` to verify that the file has not been altered since upload — important for audit and dispute resolution in MINSA inspections.

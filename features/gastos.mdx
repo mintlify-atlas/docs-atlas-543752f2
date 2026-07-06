@@ -1,0 +1,136 @@
+---
+title: "Gastos: recording water board expenses in SIMAP Digital"
+sidebarTitle: "Expenses"
+description: "The Gastos module lets collectors and admins log all water board expenses with date, amount, and description — feeding directly into MINSA reports."
+---
+
+## What are gastos?
+
+**Gastos** are the operational expenses incurred by the water board (*junta directiva*) to maintain the rural water system. These include:
+
+- **Materials:** PVC pipes, fittings, valves, cement, lumber
+- **Fuel:** Gasoline for vehicles and equipment used in field repairs
+- **Electricity:** Annual or monthly power bills for the pump system
+- **Labor:** Day-work payments for community repair crews
+- **Supplies:** Cleaning products, chlorine, stationery, printing
+
+Every balboa spent must be traceable for MINSA audits. The Gastos module creates an immutable, timestamped log that exports directly into the *Egresos* sheet of the quarterly Excel report.
+
+---
+
+## Who can record gastos?
+
+| Role | Access | Can add? |
+|------|--------|----------|
+| `cobrador` | `/gastos` | ✅ Yes |
+| `admin` | `/gastos` | ✅ Yes |
+| `minsa` | `/reporte` | 🔍 Read via reports only |
+| `cliente` | — | ❌ No access |
+
+---
+
+## Fields on the expense form
+
+| Field | Input type | Required | Description |
+|-------|-----------|----------|-------------|
+| `desc` | Text | ✅ | Description or reason for the expense |
+| `monto` | Number (`step="0.01"`) | ✅ | Amount in Panamanian balboas (B/.) |
+| `fecha` | Date | ✅ | Date the expense occurred (defaults to today) |
+
+When saved, `addGasto()` in `gastosService.js` generates a record with an auto-prefixed ID (`gst-...`) and writes it to `db.gastos`:
+
+```js
+// From gastosService.js
+const record = {
+  id: generateId('gst'),
+  monto: parseFloat(monto),
+  desc,
+  fecha,
+  timestamp: new Date().toISOString()
+};
+
+await db.gastos.add(record);
+```
+
+The running total is calculated live on the page:
+
+```js
+const total = gastos.reduce((sum, g) => sum + (parseFloat(g.monto) || 0), 0);
+```
+
+---
+
+## Demo expense entries
+
+The following ten entries are pre-loaded into every fresh installation via `DEMO_GASTOS` in `constants.js`. They represent real-world expense categories from a Panamanian rural water board:
+
+| Date | Amount (B/.) | Description |
+|------|-------------|-------------|
+| 28/12/2023 | 126.93 | Compra de materiales e insumos de aseo |
+| 06/01/2024 | 596.50 | Pago anual electricidad sistema (bomba) |
+| 30/01/2024 | 80.84 | Tubos PVC, llaves de paso y uniones |
+| 09/02/2024 | 25.90 | Confección de boletos y papelería |
+| 25/03/2024 | 702.50 | Materiales y combustible revisión tuberías |
+| 22/04/2024 | 545.50 | Cemento, pago día de trabajo local |
+| 11/07/2024 | 65.09 | Pegamento y gasolina (daño toma de agua) |
+| 06/08/2024 | 92.25 | Alimentación jornada de limpieza en toma |
+| 21/10/2024 | 38.00 | Tablón, tubos blancos PVC |
+| 26/11/2024 | 22.07 | Jabón, cloro y meriendas |
+
+**Total demo egresos: B/.2,295.58**
+
+These entries are seeded by `initDB()` in `db.js` the first time the app is loaded on a new device:
+
+```js
+// From db.js
+const gastoCount = await db.gastos.count();
+if (gastoCount === 0) {
+  await db.gastos.bulkAdd(DEMO_GASTOS);
+}
+```
+
+---
+
+## How gastos feed into MINSA reports
+
+When a MINSA inspector or administrator generates the quarterly report from `/reporte`, `getAllGastos()` returns all expense records sorted by date (descending). The export pipeline places them in the **Egresos** sheet of the Excel workbook (`Reporte_SIMAP_YYYY-MM-DD.xlsx`), with columns for date, description, and amount.
+
+This sheet is one of the four produced by the reporting module and is required for MINSA transparency obligations. The total from `getTotalGastos()` appears as the summary figure in the report header.
+
+---
+
+## Soft-delete: gastos are never physically removed
+
+Consistent with SIMAP Digital's audit-first design, gastos are **not physically deleted**. The `gastosService.js` has no delete function — once an expense is recorded, it remains in `db.gastos` permanently. This prevents retroactive manipulation of the board's financial records.
+
+If an entry was made in error, the recommended approach is to record a corrective entry with a negative or offsetting description and note it in the description field for audit clarity.
+
+<Note>
+  Only `admin` users can manage corrections. Cobradores should flag erroneous entries to the administrator rather than attempting to remove them.
+</Note>
+
+---
+
+## Offline behavior
+
+Like all transactional modules in SIMAP Digital, Gastos works fully offline:
+
+1. `addGasto()` writes directly to **`db.gastos`** (IndexedDB via Dexie.js).
+2. A sync task is queued in **`db.pendingSync`** with `type: 'ADD_GASTO'` and the full record payload.
+3. The expense list and running total update instantly via `useLiveQuery`.
+4. When connectivity returns, `syncService` uploads the pending entry to Supabase.
+
+```js
+// From gastosService.js — sync task queued on every new expense
+await db.pendingSync.add({
+  type: 'ADD_GASTO',
+  payload: record,
+  timestamp: new Date().getTime(),
+});
+```
+
+---
+
+<Tip>
+  Write specific, audit-ready descriptions. Instead of *"Materiales"*, write *"Tubos PVC 1/2 pulgada, llave de paso y uniones — daño sector Caballero Arriba"*. MINSA inspectors review these descriptions during quarterly visits, and a vague entry can trigger a follow-up request for receipts. The more detail you include at the time of entry, the less documentation you need to produce later.
+</Tip>

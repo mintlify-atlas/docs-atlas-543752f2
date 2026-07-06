@@ -1,0 +1,179 @@
+---
+title: "AI-assisted collection routing for SIMAP cobradores"
+sidebarTitle: "AI Routing"
+description: "SIMAP Digital's AI routing mode orders residents by visit priority using risk score, urgency, and geographic sector grouping to maximize collection efficiency."
+---
+
+## What AI routing does
+
+When a cobrador taps **"Ruta IA"** on the `/cobros` screen, the system generates a prioritized visit queue for the day's collection rounds. Instead of visiting houses in an arbitrary order, the cobrador receives a sorted list that surfaces the households most at risk of becoming delinquent — or already are — at the top, while grouping nearby houses in the same geographic sector to minimize travel time.
+
+This is defined as **RF-23** in the SIMAP requirements spec:
+
+> *The cobrador can activate a mode that orders households by visit priority, combining risk score, urgency (proximity to corte state), and geographic sector grouping. The AI only suggests — the cobrador always decides.*
+
+The AI routing feature is implemented in `src/services/aiService.js`.
+
+---
+
+## How visit priority is determined
+
+Each household receives a composite priority score at routing time based on three factors:
+
+1. **Risk score (0–100):** A weighted formula covering payment history, jornal participation, and sector trends. Higher scores push a household toward the top of the queue. See [Risk Scoring](/features/risk-scoring) for the full breakdown.
+2. **Urgency — proximity to `corte` state:** Households in `moroso` or `corte` status (defined in `src/utils/constants.js`) are flagged as urgent and elevated in priority regardless of their absolute risk score.
+3. **Geographic sector grouping:** After priority ordering, households within the same sector (`sector` field on the user record) are clustered together. This means the cobrador can complete an entire neighborhood before moving to the next, reducing backtracking.
+
+```js
+// constants.js — payment states that feed urgency detection
+export const ESTADOS = {
+  ACTIVO:  'activo',   // current — no outstanding balance
+  PARCIAL: 'parcial',  // partial payment on record
+  MOROSO:  'moroso',   // 1–2 months overdue
+  CORTE:   'corte',    // 3+ months overdue — service cut imminent
+};
+```
+
+---
+
+## What the AI does NOT do
+
+The routing engine is a **decision-support tool only**. It never:
+
+- Initiates contact with residents autonomously
+- Changes any payment record or account status
+- Adjusts tariffs or applies penalties
+- Overrides the cobrador's judgment
+
+The cobrador always reviews the suggested queue before starting their round and can reorder or skip any household at will.
+
+---
+
+## Behavior-profile analysis: `getSugerenciaCobrador`
+
+Beyond route ordering, the AI can generate a personalized, empathic collection message for each resident. The cobrador calls this from the resident's detail card inside `CobroModal`.
+
+The function `getSugerenciaCobrador(usuarioTarget)` in `aiService.js` works in two stages:
+
+### Stage 1 — behavior profiling
+
+```js
+async function analizarComportamiento(userId) {
+  const resumen = await getResumenUsuario(userId);
+  const pagos   = await getPagosUsuario(userId);
+
+  if (resumen.deuda === 0)         return 'puntual';
+  if (resumen.mesesDeuda === 1)    return 'olvidadizo';
+  if (resumen.mesesDeuda >= 2)     return 'moroso';
+  return 'indefinido';
+}
+```
+
+The three behavior profiles used throughout the system are:
+
+| Profile | Condition | Tone of generated message |
+|---|---|---|
+| `puntual` | `deuda === 0` — fully current | Gratitude; reinforces positive behavior |
+| `olvidadizo` | `mesesDeuda === 1` — one month behind | Gentle, friendly reminder suited for a WhatsApp message |
+| `moroso` | `mesesDeuda >= 2` — two or more months behind | Firm but empathic; includes an offer to discuss a payment plan with the board |
+
+### Stage 2 — message generation
+
+```js
+export async function getSugerenciaCobrador(usuarioTarget) {
+  try {
+    const perfil  = await analizarComportamiento(usuarioTarget.id);
+    const resumen = await getResumenUsuario(usuarioTarget.id);
+
+    const promptText = `
+      Actúa como asistente cordial de cobros para una Junta de Agua (SIMAP).
+      Cliente: ${usuarioTarget.nombre} (${usuarioTarget.sector})
+      Deuda actual: B/. ${resumen.deuda.toFixed(2)} (${resumen.mesesDeuda} meses)
+      Perfil: ${perfil}
+
+      Instrucción:
+      Si es 'puntual', redacta un agradecimiento corto.
+      Si es 'olvidadizo', un recordatorio amable por WhatsApp.
+      Si es 'moroso', un mensaje firme pero empático ofreciendo un plan de pago
+        o que se acerque a la directiva.
+      REGLA IMPORTANTE: Solo acepta efectivo. Nunca ofrezcas Yappy,
+        transferencias ni depósitos.
+    `;
+
+    // Primary: Chrome's Built-in AI (window.ai)
+    if (window.ai && window.ai.createTextSession) {
+      const session  = await window.ai.createTextSession();
+      const response = await session.prompt(promptText);
+      return { success: true, text: response };
+    }
+
+    // Fallback: local template generator
+    return {
+      success: true,
+      text: perfil === 'puntual'
+        ? `¡Hola ${usuarioTarget.nombre}! Gracias por estar al día. Tu buen comportamiento nos ayuda a mantener el agua fluyendo.`
+        : `Hola ${usuarioTarget.nombre}, soy de la Junta de Agua. Vemos un saldo pendiente de B/. ${resumen.deuda.toFixed(2)}. Recuerda que el pago solo se realiza en efectivo con nuestro cobrador o en la junta. ¡Saludos!`
+    };
+
+  } catch (error) {
+    console.error('AI Error:', error);
+    return { success: false, text: 'No se pudo conectar con el motor de IA.' };
+  }
+}
+```
+
+### Return shape
+
+```ts
+// getSugerenciaCobrador always resolves (never rejects) — errors are caught internally
+{
+  success: boolean;  // false only if an unexpected exception escapes the catch block
+  text: string;      // the generated message, or a user-friendly error string
+}
+```
+
+---
+
+## Chrome Built-in AI integration
+
+SIMAP Digital targets field devices that may be modern Android or laptop browsers running Chrome. The service first checks for **`window.ai`** (Chrome's Built-in AI / Gemini Nano API):
+
+```js
+if (window.ai && window.ai.createTextSession) {
+  const session  = await window.ai.createTextSession();
+  const response = await session.prompt(promptText);
+  return { success: true, text: response };
+}
+```
+
+If `window.ai` is not available — older browsers, Firefox, or Safari — the system automatically falls back to a deterministic local template generator. This means AI-generated messages work **fully offline** on supported devices, consistent with SIMAP's offline-first architecture.
+
+A future integration path is noted in the source for connecting to OpenAI via `process.env.VITE_OPENAI_API_KEY`, but the local fallback ensures the cobrador is never left without a message to work with.
+
+---
+
+## The cash-only rule
+
+All messages generated by the AI — whether from Chrome's Built-in AI or the local template fallback — are instructed to enforce a hard rule:
+
+> **Only cash is accepted. Never suggest Yappy, bank transfers, or deposits.**
+
+This rule is embedded directly in the prompt text and reflects the operational reality of rural Juntas in Panama, which do not have the infrastructure for digital payment verification in the field.
+
+---
+
+## Sending the message to the resident
+
+<Tip>
+  After the AI generates a collection message, the cobrador can forward it directly to the resident's in-app notification inbox. The resident sees it the next time they log into their client dashboard at `/historial`. No phone number or WhatsApp is required for delivery — the notification is written to the `notificaciones` table in the local store and synced to Supabase when connectivity is available.
+</Tip>
+
+The notification flow:
+
+1. Cobrador reviews the AI-generated message in the modal.
+2. Cobrador taps **"Enviar al cliente"**.
+3. The system writes a record to the `notificaciones` table: `{ destinatarioId, texto, fecha, leído: false }`.
+4. On next sync, the record is pushed to Supabase.
+5. The resident (`cliente` role) sees a notification badge on their dashboard.
+
+The cobrador can also copy the message text to send via WhatsApp outside the app — especially useful for the `olvidadizo` profile, where a conversational reminder is the intended channel.

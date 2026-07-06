@@ -1,0 +1,86 @@
+---
+title: "SIMAP Digital: Water Board Management for Rural Panama"
+sidebarTitle: "Introduction"
+description: "SIMAP Digital is an offline-first PWA that lets rural water boards manage payments, jornales, expenses, and MINSA reports without internet access."
+---
+
+Rural water boards in Panama — known as Juntas de Acueductos Rurales — have long managed resident payments, work jornales, and regulatory filings with nothing more than paper ledgers and a cobrador going door to door in areas with little to no cellular signal. SIMAP Digital replaces that paper workflow with a modern, installable web application that works fully offline, syncs automatically when connectivity returns, and gives every stakeholder — from field collectors to MINSA inspectors — exactly the view they need.
+
+## The problem SIMAP Digital solves
+
+Remote water-board cobradores collect monthly water fees by visiting each household on foot. In these communities:
+
+- **Internet access is unreliable or nonexistent** at collection time.
+- **Paper records are error-prone** and difficult to audit after the fact.
+- **MINSA (Ministerio de Salud) requires official reports** in standardised Excel and PDF formats that are time-consuming to produce by hand.
+- **Fraud and discrepancies** are hard to detect without an immutable audit trail.
+
+SIMAP Digital solves each of these problems with an **Offline-First architecture**: every write lands in the local IndexedDB store immediately, and data is pushed to the cloud the moment a connection becomes available.
+
+## Key capabilities
+
+<AccordionGroup>
+  <Accordion title="Offline collections" icon="wifi-slash">
+    Payments, jornales, and expenses are written directly to **IndexedDB via Dexie.js** on the collector's device. No internet required — the app works identically whether the device is online or not.
+  </Accordion>
+
+  <Accordion title="Multi-role access" icon="users">
+    Five distinct roles (`admin`, `cobrador`, `minsa`, `cliente`, `dev`) each see a tailored interface with route-level guards enforced by `authService.js`. No role can access another role's screens.
+  </Accordion>
+
+  <Accordion title="Gamification engine" icon="star">
+    Residents earn points for on-time payments (+5 pts), advance payments (+10 pts per month ahead), and community work jornales. Points can be redeemed for monetary discounts on future bills at a rate of 1 pt = B/.0.10, up to B/.1.50 per month.
+  </Accordion>
+
+  <Accordion title="AI routing (Ruta IA)" icon="robot">
+    A built-in risk-scoring engine evaluates each household (0–100 score) using five weighted factors — payment history, debt months, partial payments, jornal participation, and trend — to generate an optimised collection queue and empathetic dialogue suggestions for the cobrador.
+  </Accordion>
+
+  <Accordion title="MINSA reports" icon="file-chart-column">
+    One-click generation of official reports in **Excel (SheetJS xlsx)** with eight worksheet tabs (Ingresos, Egresos, Jornales, Resumen, Detalle Cobros, Estado Cuentas, Comisiones, Análisis IA) and signed **PDF (jsPDF)** payment receipts with SHA-256 file-integrity hashes.
+  </Accordion>
+</AccordionGroup>
+
+## User roles
+
+SIMAP Digital uses **Role-Based Access Control (RBAC)**. Every session is bound to one of five roles, each with its own permitted routes and capabilities.
+
+| Role | Username | Purpose |
+|---|---|---|
+| `admin` | `admin` | Full system control — user management, financial audit, system configuration, foro moderation, and deep audit logs. |
+| `cobrador` | `cobrador` | Field collector interface. Optimised for mobile: search residents, process payments offline, view AI route suggestions. |
+| `minsa` | `minsa` | Read-only MINSA inspector. Can generate and download official Excel and PDF reports for regulatory compliance. |
+| `cliente` | `cliente` | Resident/neighbour self-service view. Displays personal payment history, accumulated points, notifications, and community announcements. |
+| `dev` | `dev` | Technical support role. Read-only access to the system audit log only — no access to financial data or resident PII. |
+
+<Note>
+  Role permissions are defined in `src/utils/constants.js` and enforced by the `isRouteAllowed()` and `getHomeRoute()` functions in `src/services/authService.js`. Attempting to navigate to an unauthorised route redirects the user to their role's home screen automatically.
+</Note>
+
+## Technology stack
+
+| Layer | Technology | Version |
+|---|---|---|
+| Frontend framework | React + React Router | 19.x / 7.x |
+| Build tool | Vite | 8.x |
+| Local database | Dexie.js (IndexedDB wrapper) | 4.x |
+| Cloud backend | Supabase (PostgreSQL + Auth) | 2.x |
+| Excel export | SheetJS (xlsx) | 0.18.x |
+| PDF generation | jsPDF + jsPDF-AutoTable | 4.x / 5.x |
+
+## Explore further
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, configure Supabase credentials, and run the app locally in under five minutes.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Deep-dive into the offline-first design, Dexie schema versions, sync strategy, and module overview.
+  </Card>
+  <Card title="Offline-First concepts" icon="database" href="/concepts/offline-first">
+    Understand how IndexedDB, the pending-sync queue, and network-event detection work together.
+  </Card>
+  <Card title="Roles & permissions" icon="shield-halved" href="/concepts/roles-and-permissions">
+    Detailed RBAC mapping — which routes each role can access and how route guards are implemented.
+  </Card>
+</CardGroup>

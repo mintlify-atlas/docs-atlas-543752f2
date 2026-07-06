@@ -1,0 +1,125 @@
+---
+title: "Foro: community announcements and board notices"
+sidebarTitle: "Forum"
+description: "The Foro module is a one-way announcement board where admins and collectors post notices about cobro dates, jornales, and community events."
+---
+
+## What is the Foro?
+
+The **Foro** (literally *forum*, but functionally a notice board) is where the water board's *junta directiva* publishes official announcements to the entire community. It is a **broadcast channel** — the board posts, the community reads.
+
+Unlike a social feed or messaging service, the Foro has no reply mechanism. It is designed to mirror the physical notice boards or WhatsApp broadcast lists that many rural water boards already use, giving those announcements a permanent, auditable home inside SIMAP Digital.
+
+The page is titled **"Muro Comunitario"** in the UI, with the subtitle *"Avisos oficiales de la junta directiva"*.
+
+---
+
+## Who can post and who can read?
+
+| Role | Route | Can post? | Can read? |
+|------|-------|-----------|-----------|
+| `admin` | `/foro` | ✅ Yes | ✅ Yes |
+| `cobrador` | `/foro` | ✅ Yes | ✅ Yes |
+| `cliente` | `/foro` | ❌ No | ✅ Yes |
+| `minsa` | `/reporte` | ❌ No | ❌ (via reports) |
+
+The `ForoPage.jsx` determines posting rights with a single role check:
+
+```js
+// From ForoPage.jsx
+const isAdmin = user?.rol === 'admin' || user?.rol === 'cobrador';
+```
+
+When `isAdmin` is `true`, a compose card appears at the top of the page. Clients see only the feed of published announcements.
+
+---
+
+## What gets stored
+
+Posts are persisted in the **`db.foro`** table, defined in `db.js` (schema version 2):
+
+```js
+// From db.js
+db.version(2).stores({
+  foro: '++id, fecha, autor',
+});
+```
+
+Each post record contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Auto-generated ID with prefix `post-` |
+| `titulo` | `string` | Announcement headline |
+| `contenido` | `string` | Body text of the announcement |
+| `autor` | `string` | Name of the user who posted (`user.nombre` or `user.user`) |
+| `fecha` | `string` | ISO timestamp of when the post was created |
+
+Posts are displayed in reverse-chronological order (newest first) via `getAllPosts()`:
+
+```js
+// From foroService.js
+export async function getAllPosts() {
+  const posts = await db.foro.toArray();
+  return posts.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+}
+```
+
+Each post card in the feed shows the title, body, the author's name prefixed with 👤, and a relative timestamp (e.g. *"hace 2 días"*) via `formatRelativeTime()`.
+
+---
+
+## Typical use cases
+
+The Foro is most commonly used for:
+
+- **Upcoming collection dates** — *"El cobro del mes de marzo será el sábado 15, de 8am a 12pm en la caseta."*
+- **Jornal schedules** — *"Jornada comunitaria programada para el domingo 20 de abril. Presentarse a las 7am en la toma de agua."*
+- **Water system maintenance notices** — *"Habrá corte programado de agua el miércoles 10 de 9am a 1pm por reparación de tubería principal."*
+- **Board meeting announcements** — *"Reunión de junta directiva el viernes 25 a las 6pm. Presencia obligatoria de socios."*
+- **Urgency notices** — *"Avería detectada en el sistema de bombeo. Se trabajará en la reparación durante el fin de semana."*
+
+---
+
+## Foro vs. Chat: key differences
+
+SIMAP Digital has two separate communication areas. They serve different purposes:
+
+| | Foro (`/foro`) | Chat (`/chat`) |
+|---|---|---|
+| **Direction** | One-way broadcast | Two-way direct messaging |
+| **Audience** | All community members | Between specific users |
+| **Who initiates** | `admin` or `cobrador` only | Any role with chat access |
+| **Typical content** | Official notices, schedules | Private payment queries, follow-ups |
+| **Data table** | `db.foro` | `db.mensajes` (by `conversacionId`) |
+| **Persistent for reports?** | Yes | No |
+
+Use the Foro for anything the entire community needs to know. Use the Chat for conversations between a specific cobrador and a specific member.
+
+---
+
+## Offline behavior
+
+The Foro participates in SIMAP Digital's offline-first sync cycle. When `createPost()` is called:
+
+1. The post is saved immediately to **`db.foro`** (IndexedDB via Dexie.js).
+2. A sync task is queued in **`db.pendingSync`** with `type: 'ADD_POST'` and the full post payload.
+3. The feed updates instantly via `useLiveQuery(() => db.foro.orderBy('fecha').reverse().toArray())`.
+4. When the device reconnects, `syncService` pushes the post to Supabase so other users on other devices see it.
+
+```js
+// From foroService.js — queued on every new post
+await db.pendingSync.add({
+  type: 'ADD_POST',
+  payload: record,
+  timestamp: new Date().getTime(),
+});
+```
+
+This means a cobrador or admin can draft and publish announcements while in the field (e.g. at the jornal site without signal) and they will appear on every connected device once sync runs.
+
+---
+
+<Note>
+  Clients (`cliente` role) can read all announcements on the Foro, but the compose form is hidden for them — they have no ability to reply, react, or post. If a community member needs to communicate with the board, they should use the direct Chat feature or contact the cobrador in person.
+</Note>

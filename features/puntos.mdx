@@ -1,0 +1,203 @@
+---
+title: "Points and rewards: gamification engine in SIMAP Digital"
+sidebarTitle: "Points & Rewards"
+description: "SIMAP Digital awards residents points for punctual payments and jornal attendance, redeemable as bill discounts at 1 point = B/.0.01."
+---
+
+## Why gamification?
+
+Rural water boards depend on two pillars: **consistent monthly fees** and **community labor (jornales)**. SIMAP Digital's points engine creates positive reinforcement for both. Instead of relying solely on fines and service cuts, the system rewards residents who pay on time and show up to community workdays. This transforms collection dynamics from purely punitive to a blend of incentives and accountability that rural Juntas have found culturally effective.
+
+The points system is defined in RF-19 and RF-20 of the SIMAP requirements spec and is implemented in `src/services/puntosService.js`.
+
+---
+
+## How points are earned
+
+Every qualifying action writes a `ganancia` record to the `puntos_historial` table in the local IndexedDB store. The table below lists all earning events:
+
+| Event | Points awarded |
+|---|---|
+| Basic monthly payment | 2 pts |
+| Punctual payment (paid before the 15th) | 5 pts |
+| Multi-month or advance payment | 10 pts per extra month covered |
+| Personal jornal attendance | 8 pts |
+| Substitute attendance | 3 pts |
+| Jornal confirmation submitted in advance | 2 pts |
+| Full quarter with zero fines | 15 pts |
+| Full calendar year paid without gaps | 30 pts |
+
+Points are awarded automatically by the service layer at the moment the payment or jornal attendance is recorded — the cobrador does not need to manually grant them.
+
+---
+
+## Redemption rules
+
+Points convert to Balboa discounts at a fixed rate:
+
+- **1 point = B/.0.01** (one centavo)
+- **Minimum redemption:** 10 points (= B/.0.10)
+- **Maximum discount per month:** B/.1.50
+
+These defaults are configurable by the administrator in ConfigPage (see [Admin configuration](#admin-configuration) below).
+
+> **Important — commission integrity (RF-20):** The cobrador's commission is always calculated on the **full tariff**, not on the discounted amount after points are applied. A resident who redeems B/.1.50 in points off a B/.3.00 bill still generates the full B/.3.00 commission basis. This protects cobrador earnings while rewarding residents.
+
+---
+
+## Utility functions
+
+Two pure functions in `puntosService.js` handle the conversion math:
+
+```js
+// src/services/puntosService.js
+
+/**
+ * Convert a points balance to its Balboa value.
+ * 100 points = B/.1.00  →  1 point = B/.0.01
+ */
+export function calcularDescuentoBalboas(puntos) {
+  return puntos / 100;
+}
+
+/**
+ * Convert a Balboa amount back into points (for display or validation).
+ */
+export function balboasAPuntos(balboas) {
+  return Math.floor(balboas * 100);
+}
+```
+
+These functions are imported directly by `CobroModal.jsx` to compute the live discount preview as the cobrador toggles the "Usar puntos" checkbox.
+
+---
+
+## How to redeem: the CobroModal flow
+
+Redemption happens inside the payment modal (`src/components/cobros/CobroModal.jsx`). The cobrador opens the modal for a resident who has a positive points balance and follows these steps:
+
+<Steps>
+  <Step title="Open the Cobro Modal">
+    From the `/cobros` screen, tap the resident's row. The modal loads their payment summary and fetches their current points balance via `obtenerSaldoPuntos(userId)`.
+  </Step>
+  <Step title="Review the points banner">
+    If the resident has any points, a gold banner appears beneath the payment-type tabs:
+
+    > 🌟 **Tienes 120 Puntos SIMAP** — Equivale a B/.1.20 de descuento.
+
+    The discount amount is calculated live using `calcularDescuentoBalboas(puntos)`.
+  </Step>
+  <Step title="Toggle 'Usar puntos'">
+    The cobrador checks the **Usar puntos** checkbox. The final amount displayed in the cobro total updates immediately — the discount is subtracted from `montoFinal` before it is shown:
+
+    ```js
+    if (usarPuntos && puntos > 0) {
+      const descuento = calcularDescuentoBalboas(puntos);
+      monto = Math.max(0, redondear(monto - descuento));
+    }
+    ```
+  </Step>
+  <Step title="Confirm the payment">
+    The cobrador taps **Confirmar Cobro**. The system calls `registrarPago()` with the discounted amount, then immediately calls `canjearPuntos()` to write the redemption record:
+
+    ```js
+    await registrarPago(user.id, { tipo, monto: montoFinal, nota });
+
+    if (usarPuntos && puntos > 0) {
+      await canjearPuntos(user.id, puntos, 'Descuento aplicado en cobro');
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Core service functions
+
+```js
+// src/services/puntosService.js
+
+/**
+ * Award points to a resident for a positive action.
+ * Writes a 'ganancia' record to puntos_historial.
+ */
+export async function otorgarPuntos(usuarioId, cantidad, motivo) {
+  if (cantidad <= 0) return;
+
+  await db.puntos_historial.add({
+    usuarioId: String(usuarioId),
+    cantidad: cantidad,
+    tipo_transaccion: 'ganancia',
+    motivo: motivo,        // e.g. 'Pago puntual antes del día 15'
+    fecha: new Date().toISOString()
+  });
+}
+
+/**
+ * Redeem points as a bill discount.
+ * Writes a 'canje' record and throws if the balance is insufficient.
+ */
+export async function canjearPuntos(usuarioId, cantidad, motivo = 'Descuento en cobro') {
+  const saldoActual = await obtenerSaldoPuntos(usuarioId);
+  if (cantidad > saldoActual) {
+    throw new Error('No hay suficientes puntos para canjear');
+  }
+
+  await db.puntos_historial.add({
+    usuarioId: String(usuarioId),
+    cantidad: cantidad,
+    tipo_transaccion: 'canje',
+    motivo: motivo,
+    fecha: new Date().toISOString()
+  });
+}
+```
+
+---
+
+## The `puntos_historial` table
+
+All point activity lives in a single append-only table in the local IndexedDB (`Dexie.js`) store. There are exactly **two transaction types**:
+
+| `tipo_transaccion` | Meaning |
+|---|---|
+| `ganancia` | Points earned — added to the running balance |
+| `canje` | Points redeemed — subtracted from the running balance |
+
+No records are ever deleted or modified. The current balance is always a fresh derivation from the full history.
+
+<Note>
+  The live points balance (`obtenerSaldoPuntos`) is computed by iterating all `puntos_historial` rows for a resident and summing `ganancia` entries while subtracting `canje` entries. There is no cached "balance" column — the ledger is the source of truth. This design is intentional: it keeps the history immutable and tamper-evident, consistent with SIMAP's broader audit philosophy.
+</Note>
+
+```js
+export async function obtenerSaldoPuntos(usuarioId) {
+  const historial = await db.puntos_historial
+    .where('usuarioId').equals(String(usuarioId))
+    .toArray();
+
+  let saldo = 0;
+  for (const h of historial) {
+    if (h.tipo_transaccion === 'ganancia') {
+      saldo += h.cantidad;
+    } else if (h.tipo_transaccion === 'canje') {
+      saldo -= h.cantidad;
+    }
+  }
+  return saldo;
+}
+```
+
+---
+
+## Admin configuration
+
+The administrator can tune the entire incentive system from **ConfigPage** (`/puntos-admin`, accessible to the `admin` role). The relevant fields in the "Reglas de Fidelidad (Puntos)" card are:
+
+| Config field | Default | Description |
+|---|---|---|
+| `puntosPorPagoPuntual` | 10 | Points granted for an on-time payment |
+| `puntosRequeridosDescuento` | 100 | Points threshold to unlock a redemption |
+| `descuentoGenerado` | B/.3.00 | Discount value generated when threshold is reached |
+
+Changes are persisted via `saveConfig()` to the local store and synced to Supabase when the device comes online. The ConfigPage validates that commission splits (`splitDevs + splitCobrador`) always equal exactly 1.0 (100%) before saving.

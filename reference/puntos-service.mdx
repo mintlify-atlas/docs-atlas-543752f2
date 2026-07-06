@@ -1,0 +1,271 @@
+---
+title: "puntosService: gamification and points management API"
+sidebarTitle: "puntosService"
+description: "JavaScript module for awarding, redeeming, and querying resident loyalty points in SIMAP Digital's gamification engine."
+---
+
+`puntosService` powers SIMAP Digital's gamification layer. It writes every transaction (earned or redeemed) to the local Dexie `puntos_historial` table, making the ledger available fully offline. Points are used to reward residents for timely payments and can be exchanged for discounts on their water bill at a fixed 1 point = B/.0.01 rate.
+
+---
+
+## Points ledger record shape
+
+Every call to `otorgarPuntos` or `canjearPuntos` appends one record to `puntos_historial`:
+
+<ResponseField name="id" type="number">
+  Auto-incremented primary key assigned by Dexie.
+</ResponseField>
+
+<ResponseField name="usuarioId" type="string">
+  Resident ID coerced to a string (e.g., `'3'`).
+</ResponseField>
+
+<ResponseField name="cantidad" type="number">
+  Point quantity for this transaction (always positive).
+</ResponseField>
+
+<ResponseField name="tipo_transaccion" type="string">
+  Either `'ganancia'` (points earned) or `'canje'` (points redeemed).
+</ResponseField>
+
+<ResponseField name="motivo" type="string">
+  Human-readable description of why points were awarded or spent.
+</ResponseField>
+
+<ResponseField name="fecha" type="string">
+  ISO 8601 timestamp of when the transaction was recorded.
+</ResponseField>
+
+---
+
+## `otorgarPuntos(usuarioId, cantidad, motivo)`
+
+Awards points to a resident by appending a `'ganancia'` transaction to `puntos_historial`. Silently no-ops if `cantidad` is 0 or negative, preventing accidental zero-point entries.
+
+`pagosService` calls this function automatically when `registrarPago` processes a `mensual`, `multi_mes`, or `adelanto` payment.
+
+```javascript
+async function otorgarPuntos(
+  usuarioId: string | number,
+  cantidad: number,
+  motivo: string
+): Promise<void>
+```
+
+**Parameters**
+
+<ParamField path="usuarioId" type="string | number" required>
+  The resident's ID. Internally coerced to `String` before storage.
+</ParamField>
+
+<ParamField path="cantidad" type="number" required>
+  Number of points to award. Must be greater than 0; any value ≤ 0 is silently ignored.
+</ParamField>
+
+<ParamField path="motivo" type="string" required>
+  Short description of the reward reason. Displayed in the resident's points history screen.
+</ParamField>
+
+**Returns**
+
+`void`. Resolves once the record has been written to Dexie.
+
+**Example**
+
+```javascript
+import { otorgarPuntos } from './services/puntosService';
+
+// Award 5 points for an on-time monthly payment
+await otorgarPuntos(2, 5, 'Pago puntual (Mes al día)');
+
+// Award 30 points for paying 3 months in advance
+await otorgarPuntos(2, 30, 'Pago adelantado (3 meses)');
+```
+
+<Note>
+  `pagosService` calls `otorgarPuntos` automatically: 5 points for `mensual`, 10 points per month for `multi_mes` and `adelanto`. You only need to call this directly for custom reward events.
+</Note>
+
+---
+
+## `canjearPuntos(usuarioId, cantidad, motivo?)`
+
+Redeems points from a resident's balance by appending a `'canje'` transaction to `puntos_historial`. Throws an error if the resident does not have enough points to cover the redemption.
+
+```javascript
+async function canjearPuntos(
+  usuarioId: string | number,
+  cantidad: number,
+  motivo?: string
+): Promise<void>
+```
+
+**Parameters**
+
+<ParamField path="usuarioId" type="string | number" required>
+  The resident's ID.
+</ParamField>
+
+<ParamField path="cantidad" type="number" required>
+  Number of points to redeem. Must not exceed the resident's current balance (see `obtenerSaldoPuntos`).
+</ParamField>
+
+<ParamField path="motivo" type="string">
+  Optional description of what the points were redeemed for. Defaults to `'Descuento en cobro'`.
+</ParamField>
+
+**Returns**
+
+`void`. Resolves once the redemption record has been written.
+
+**Throws**
+
+`Error('No hay suficientes puntos para canjear')` — if `cantidad` exceeds the resident's current point balance.
+
+**Example**
+
+```javascript
+import { canjearPuntos } from './services/puntosService';
+
+try {
+  await canjearPuntos(2, 50, 'Descuento aplicado en pago de julio');
+} catch (err) {
+  console.error(err.message); // "No hay suficientes puntos para canjear"
+}
+```
+
+---
+
+## `obtenerSaldoPuntos(usuarioId)`
+
+Calculates the current point balance for a resident by replaying all entries in `puntos_historial`: summing `'ganancia'` transactions and subtracting `'canje'` transactions.
+
+```javascript
+async function obtenerSaldoPuntos(
+  usuarioId: string | number
+): Promise<number>
+```
+
+**Parameters**
+
+<ParamField path="usuarioId" type="string | number" required>
+  The resident's ID.
+</ParamField>
+
+**Returns**
+
+A `number` — the net point balance. Returns `0` if the resident has no history records.
+
+**Example**
+
+```javascript
+import { obtenerSaldoPuntos } from './services/puntosService';
+
+const saldo = await obtenerSaldoPuntos(2);
+console.log(`Puntos disponibles: ${saldo}`); // e.g. 45
+```
+
+---
+
+## `calcularDescuentoBalboas(puntos)`
+
+Converts a point quantity to its equivalent monetary value in Panamanian balboas.
+
+**Exchange rate:** 1 point = B/.0.01 (1 centavo). 100 points = B/.1.00.
+
+```javascript
+function calcularDescuentoBalboas(puntos: number): number
+```
+
+**Parameters**
+
+<ParamField path="puntos" type="number" required>
+  The number of points to convert.
+</ParamField>
+
+**Returns**
+
+A `number` — the equivalent value in balboas (`puntos / 100`).
+
+**Example**
+
+```javascript
+import { calcularDescuentoBalboas } from './services/puntosService';
+
+calcularDescuentoBalboas(100);  // 1.00  (B/. 1.00)
+calcularDescuentoBalboas(350);  // 3.50  (B/. 3.50)
+calcularDescuentoBalboas(50);   // 0.50  (B/. 0.50)
+```
+
+---
+
+## `balboasAPuntos(balboas)`
+
+Converts a balboa amount to its equivalent point value. The inverse of `calcularDescuentoBalboas`. Fractional centavos are discarded with `Math.floor`.
+
+```javascript
+function balboasAPuntos(balboas: number): number
+```
+
+**Parameters**
+
+<ParamField path="balboas" type="number" required>
+  The amount in balboas to convert.
+</ParamField>
+
+**Returns**
+
+A `number` — the equivalent point value (`Math.floor(balboas * 100)`).
+
+**Example**
+
+```javascript
+import { balboasAPuntos } from './services/puntosService';
+
+balboasAPuntos(3.00);  // 300
+balboasAPuntos(1.50);  // 150
+balboasAPuntos(0.75);  // 75
+```
+
+---
+
+## Full earn-and-redeem flow
+
+The following example demonstrates a complete lifecycle: a resident earns points through payments, checks their balance, converts it to a discount amount, and redeems the points at their next collection visit.
+
+```javascript
+import {
+  otorgarPuntos,
+  obtenerSaldoPuntos,
+  calcularDescuentoBalboas,
+  balboasAPuntos,
+  canjearPuntos,
+} from './services/puntosService';
+
+const residentId = 2; // Familia Rodriguez
+
+// --- Earning phase (called automatically by pagosService on payment) ---
+await otorgarPuntos(residentId, 5,  'Pago puntual (Mes al día)');   // monthly payment
+await otorgarPuntos(residentId, 20, 'Pago adelantado (2 meses)');   // 2-month advance
+
+// --- Check balance ---
+const saldo = await obtenerSaldoPuntos(residentId);
+console.log(`Saldo: ${saldo} puntos`); // "Saldo: 25 puntos"
+
+// --- How much is that worth? ---
+const descuento = calcularDescuentoBalboas(saldo);
+console.log(`Equivale a B/. ${descuento.toFixed(2)}`); // "Equivale a B/. 0.25"
+
+// --- Convert a B/.1.00 discount to points needed ---
+const puntosNecesarios = balboasAPuntos(1.00);
+console.log(`Puntos necesarios para B/.1.00: ${puntosNecesarios}`); // 100
+
+// --- Redemption (at next collection visit) ---
+try {
+  await canjearPuntos(residentId, 25, 'Descuento aplicado en pago de agosto');
+  const nuevoSaldo = await obtenerSaldoPuntos(residentId);
+  console.log(`Saldo restante: ${nuevoSaldo} puntos`); // 0
+} catch (err) {
+  console.error('Canje fallido:', err.message);
+}
+```

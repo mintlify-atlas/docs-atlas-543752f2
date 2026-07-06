@@ -1,0 +1,203 @@
+---
+title: "Payment types supported by SIMAP Digital collections"
+sidebarTitle: "Payment Types"
+description: "SIMAP Digital supports six payment types: mensual, diario, parcial, multi_mes, adelanto, and puesta_al_día — each with automatic saldo tracking."
+---
+
+## Overview
+
+SIMAP Digital's payment engine (`pagosService.js`) supports six distinct payment types, all routed through the single entry-point function `registrarPago(userId, opciones)`. Every type creates a record in the `pagos` table and a companion entry in `pendingSync`, and then calls `actualizarSaldo()` to keep the `saldos` ledger accurate — whether the device is online or not.
+
+---
+
+## Default configuration
+
+The default tariff values come from `DEFAULT_CONFIG` in `src/utils/constants.js`:
+
+```js
+export const DEFAULT_CONFIG = {
+  cuotaMensual:     3.00,   // Monthly quota in Balboas
+  permitirParciales: true,  // Allow partial payments
+  mesesGraciaCorte:  3,     // Months before cutoff (corte) state
+};
+```
+
+An admin can override these values at any time via the ConfigPage. All payment calculations read from the live config using `getConfig()` so changes take effect immediately for new payments.
+
+<Note>
+  `mesesGraciaCorte: 3` means that after **3 consecutive unpaid months** a resident's state transitions to `corte` (🔴), indicating risk of service cutoff. At 1–2 months the state is `moroso` (⚠️).
+</Note>
+
+---
+
+## Payment types reference
+
+| Key | Display label | Base amount | Points awarded | Resulting `saldo` state |
+|-----|--------------|-------------|----------------|------------------------|
+| `mensual` | Cuota Mensual | `cuotaMensual` (B/.3.00) | **5 pts** (pago puntual) | `pagado` |
+| `diario` | Pago Diario | `cuotaMensual ÷ 30` per day | None | `parcial` (accumulates) |
+| `parcial` | Parcial | Any amount `< cuotaMensual` | None until month complete | `parcial` |
+| `multi_mes` | Multi-Mes | `cuotaMensual × N months` | **10 pts × extra months** | `pagado` per month |
+| `adelanto` | Adelanto | `cuotaMensual × N months` | **10 pts × extra months** | `pagado` (future months) |
+| `puesta_al_dia` | Puesta al Día | Auto: sum of all pending `saldo` values | None extra | `pagado` for all backlogged months |
+
+---
+
+## Type-by-type details
+
+### 1. `mensual` — Standard monthly quota
+
+**Label:** Cuota Mensual
+
+The most common payment type. The cobrador selects this for a resident paying the current (or a specific) month in full.
+
+- **Amount:** `cfg.cuotaMensual` (default **B/.3.00**). No manual entry required.
+- **Months covered:** The `mesTarget` passed in, or the current month if omitted.
+- **Points:** `otorgarPuntos(userId, 5, 'Pago puntual (Mes al día)')` — 5 points awarded automatically.
+- **Resulting state:** `saldo.estado = 'pagado'`, `saldo.saldo = 0`.
+
+---
+
+### 2. `diario` — Daily rate payment
+
+**Label:** Pago Diario
+
+Designed for day-laborers (jornaleros) who can only pay in small increments. The cobrador enters the number of days being paid.
+
+- **Daily rate:** `cuotaMensual ÷ 30` = **B/.0.10/day** at the default tariff.
+- **Amount:** `monto` passed in from the CobroModal (e.g. 15 days × B/.0.10 = **B/.1.50**).
+- **Months covered:** Only the current month's running total.
+- **Points:** None until the month reaches `pagado` status.
+- **Resulting state:** `parcial` until accumulated daily payments reach `cuotaMensual`.
+
+The service records the number of equivalent days in the payment note: `"15 días"`.
+
+---
+
+### 3. `parcial` — Partial payment
+
+**Label:** Parcial
+
+Any payment where the amount is less than the full monthly quota and the resident is simply paying what they can right now.
+
+- **Amount:** Entered freely by the cobrador in the modal (min B/.0.10, max B/.3.00 at default tariff).
+- **Months covered:** Current or specified month only.
+- **Points:** None until the month is fully paid.
+- **Resulting state:** `parcial` (`saldo.saldo = cuotaTotal - accumulated`). Once the running total reaches `cuotaTotal`, the state flips to `pagado`.
+
+---
+
+### 4. `multi_mes` — Multiple months at once
+
+**Label:** Multi-Mes
+
+The resident pays for several consecutive months in a single transaction. Common when a family returns from travel and wants to clear several months quickly, or when a resident prefers to pay quarterly.
+
+- **Amount:** `cuotaMensual × N` (e.g. 4 months = **B/.12.00**).
+- **Months covered:** `N` months starting from the current month (or an explicit `mesesTarget` array).
+- **Points:** `N × 10` bonus points — rewarding consolidated payment (e.g. 4 months = 40 pts).
+- **Resulting state:** Each month in the range becomes `pagado` individually in the `saldos` ledger.
+
+The engine creates one receipt per month:
+
+```js
+for (const mes of meses) {
+  const recibo = await crearRecibo(userId, cfg.cuotaMensual, 'multi_mes', mes, meses, nota);
+  await actualizarSaldo(userId, mes, cfg.cuotaMensual, recibo.idPago);
+}
+await otorgarPuntos(userId, numMeses * 10, `Pago de múltiples meses (${numMeses})`);
+```
+
+---
+
+### 5. `adelanto` — Advance payment for future months
+
+**Label:** Adelanto
+
+Like `multi_mes` but the months covered start **next month** rather than the current month. Used by residents who want to pay ahead and avoid future visits.
+
+- **Amount:** `cuotaMensual × N` future months.
+- **Months covered:** Starts from `currentMonth + 1` (cursor advances one month before generating the target list).
+- **Points:** Same as `multi_mes` — `N × 10` bonus points.
+- **Resulting state:** Future-month saldo records created and immediately set to `pagado`.
+
+```js
+// The cursor starts at next month
+const cursor = new Date(ahora);
+cursor.setMonth(cursor.getMonth() + 1);
+const meses = generateMonths(cursor, numMeses);
+```
+
+---
+
+### 6. `puesta_al_dia` — Pay all outstanding debt
+
+**Label:** Puesta al Día
+
+The most powerful type for resolving arrears. The system automatically fetches the complete list of unpaid months (`getMesesPendientes()`), calculates the exact remaining balance for each (honoring any prior partial payments), and pays them all in a single flow.
+
+- **Amount:** Auto-calculated — the sum of all `saldo.saldo` values across every pending month. Shown in the modal as "Deuda total: B/.X.XX".
+- **Months covered:** All months from the earliest unpaid back to the current month.
+- **Points:** No extra bonus (the resident is clearing debt, not paying ahead). Base points apply when each month moves to `pagado`.
+- **Resulting state:** All previously `pendiente` or `parcial` months become `pagado`. The resident's overall state transitions from `moroso`/`corte` to `activo`.
+
+---
+
+## Saldo composite key pattern
+
+The `saldos` table uses a **compound primary key** `[usuarioId + mes]`, where `mes` is a string in `"YYYY-MM"` format (e.g. `"2025-07"`). This means:
+
+- Each resident has at most **one saldo record per month**.
+- Looking up a specific resident-month pair is an `O(1)` IndexedDB get: `db.saldos.get([userId, mes])`.
+- Partial payments on the same month accumulate into the same record rather than creating duplicate rows.
+
+---
+
+## Estado transition lifecycle
+
+```
+pendiente  ──(any payment < cuotaTotal)──►  parcial
+parcial    ──(payment completes balance)──► pagado
+pendiente  ──(full payment in one shot)───► pagado
+```
+
+At the user level, `calcularEstado(userId)` maps saldo history to the four UI states:
+
+```
+activo   ← current month pagado + no prior debt
+parcial  ← current month saldo.estado === 'parcial'
+moroso   ← 1–2 consecutive months unpaid
+corte    ← mesesDeuda >= mesesGraciaCorte (default 3)
+```
+
+---
+
+## Code example: calling `registrarPago()`
+
+```js
+import { registrarPago } from './services/pagosService';
+
+// 1. Standard monthly payment for the current month
+const receipts = await registrarPago(userId, {
+  tipo: 'mensual',
+  nota: 'Cobro en puerta — efectivo',
+});
+// → creates 1 receipt, updates saldo to 'pagado', awards 5 pts
+
+// 2. Multi-month payment covering 3 months (B/.9.00)
+const receipts = await registrarPago(userId, {
+  tipo: 'multi_mes',
+  monto: 9.00,          // system derives numMeses = 9.00 / 3.00 = 3
+  nota: 'Pago trimestral',
+});
+// → creates 3 receipts (one per month), awards 30 pts (3 × 10)
+
+// 3. Clear all outstanding debt automatically
+const receipts = await registrarPago(userId, {
+  tipo: 'puesta_al_dia',
+  nota: 'Puesta al día — visita de campo',
+});
+// → creates N receipts for every pending/partial month
+```
+
+Each call to `registrarPago()` ends with `syncUserStatus(userId)`, which recalculates the user's estado and mesesSinPagar and writes the updated values back to the `usuarios` table so that UserCard badges are always current.

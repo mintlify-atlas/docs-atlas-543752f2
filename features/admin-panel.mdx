@@ -1,0 +1,220 @@
+---
+title: "Admin panel: user management and system configuration"
+sidebarTitle: "Admin Panel"
+description: "The admin panel lets administrators approve new residents, manage user accounts, review audit logs, configure payment rules, and set commission splits."
+---
+
+## Overview
+
+The Admin Panel (`/admin`) is the operational hub for system administrators. It provides full control over user lifecycles, system configuration, commission rules, gamification parameters, and a tamper-evident audit trail. A restricted view is also available to the `dev` role for technical support purposes.
+
+| Role | Access |
+|---|---|
+| `admin` | Full access — all tabs visible |
+| `dev` | Restricted — **Logs de Auditoría** tab only |
+
+---
+
+## Route
+
+```
+/admin
+```
+
+The `ROLE_HOME` constant routes both `admin` and `dev` here on login:
+
+```js
+export const ROLE_HOME = {
+  admin: '/admin',
+  dev:   '/admin', // Will show only Auditoría tab
+};
+```
+
+The page detects the active session role on load:
+
+```js
+const session = getSession();
+const isDev = session?.rol === 'dev';
+const [activeTab, setActiveTab] = useState(isDev ? 'auditoria' : 'pendientes');
+```
+
+If the session is `dev`, the **Pendientes** and **Usuarios Activos** tabs are hidden from the DOM entirely, and the default tab is locked to `auditoria`.
+
+---
+
+## Panel Tabs
+
+### 1. Pendientes — Registration Approval Queue
+
+Displays all users with `estado: 'pendiente'` from `db.registeredUsers`. Each card shows:
+
+- Full name (`nombre`) and username (`user`)
+- Lot number (`casa`) and sector (`sector`)
+- **Rechazar** and **Aprobar** action buttons
+
+```js
+const pendientes = users.filter(u => u.estado === 'pendiente');
+```
+
+### 2. Usuarios Activos — Account Management
+
+Displays all users with `estado: 'activo'` or `estado: 'suspendido'`. Includes a live search bar filtering by `user` or `nombre`. Each card exposes four actions:
+
+| Button | Action | Function Called |
+|---|---|---|
+| 🔑 Pass | Reset password | `resetUserPassword(username, newPass)` |
+| 👤 Rol | Change role | `updateUserRole(username, newRole)` |
+| Suspender / Activar | Toggle suspension | `suspendUser()` / `approveUser()` |
+| 🗑️ Borrar | Soft-delete | Sets `estado: 'eliminado'`, writes audit log |
+
+Valid roles for assignment: `cliente`, `cobrador`, `admin`.
+
+### 3. Logs de Auditoría — Immutable Audit Log
+
+Displays all entries from `db.auditoria`, ordered by `timestamp` descending. Each log entry shows:
+
+| Field | Description |
+|---|---|
+| `accion` | Action type (e.g., `SOFT_DELETE`, `APPROVE`, `ROLE_CHANGE`) |
+| `timestamp` | ISO timestamp of the action |
+| `user_id` | Username of the actor who performed the action |
+| `afectado_id` | Username of the user who was affected |
+| `detalles` | Optional human-readable context string |
+
+---
+
+## What Admins Can Do
+
+### User Management
+
+- **View pending registrations** and approve or reject them
+- **Search active accounts** by name or username
+- **Reset passwords** for locked-out users
+- **Change roles** between `cliente`, `cobrador`, and `admin`
+- **Suspend accounts** temporarily without deleting data
+- **Soft-delete accounts** — see [Soft-Delete Policy](#soft-delete-policy) below
+
+### System Configuration (ConfigPage — `/config`)
+
+Admins also manage the global system variables via `ConfigPage`, which reads and writes to `db.config` via `getConfig()` / `saveConfig()`:
+
+| Setting | Key | Default | Description |
+|---|---|---|---|
+| Monthly quota | `cuotaMensual` | B/.3.00 | Base water fee per household per month |
+| Allow partials | `permitirParciales` | `true` | Whether partial payments are accepted |
+| Grace months | `mesesGraciaCorte` | 3 | Months without payment before service cut |
+| Jornal fine | `multaJornal` | B/.10.00 | Fine for missing a mandatory work day |
+
+### Commission Configuration
+
+The commission split is validated to always sum to exactly 1.0 (100%):
+
+| Setting | Key | Default | Description |
+|---|---|---|---|
+| Dev/SIMAP fund share | `splitDevs` | 0.60 (60%) | Portion going to the platform/developers |
+| Collector share | `splitCobrador` | 0.40 (40%) | Portion going to the field collector |
+
+```js
+// Validation in ConfigPage.jsx
+if (formData.splitDevs + formData.splitCobrador !== 1.0) {
+  showToast('La suma de % de Cobrador y Devs debe ser 1 (100%)', { type: 'error' });
+  return;
+}
+```
+
+### Gamification Rules
+
+Admins can tune the loyalty point system that incentivizes on-time payment and jornal attendance:
+
+| Setting | Key | Default | Description |
+|---|---|---|---|
+| Points per on-time payment | `puntosPorPagoPuntual` | 10 | Awarded when payment is registered on time |
+| Points required for redemption | `puntosRequeridosDescuento` | 100 | Minimum balance to redeem a discount |
+| Discount amount on redemption | `descuentoGenerado` | B/.3.00 | Monetary credit applied to next payment |
+
+---
+
+## Registration Approval Flow
+
+This flow corresponds to **Escenario 5** in `docs/requisitos.md`:
+
+<Steps>
+  <Step title="Resident self-registers at /registro">
+    The `/registro` route is publicly accessible — no login required. The new resident fills in their full name, lot number (`casa`), desired username, and password. The record is saved to `db.registeredUsers` with `estado: 'pendiente'`.
+  </Step>
+  <Step title="Admin sees the request in Pendientes">
+    On the next login (or in real time via `useLiveQuery`), the admin sees the new request appear in the **Pendientes** tab with a count badge showing the queue size.
+  </Step>
+  <Step title="Admin reviews the request">
+    The card displays the registrant's name, username, lot, and sector. The admin can cross-reference with the physical membership list if needed.
+  </Step>
+  <Step title="Admin clicks ✅ Aprobar">
+    `approveUser(username)` is called from `adminService.js`, which updates the user's `estado` from `'pendiente'` to `'activo'`. A success toast confirms the action.
+  </Step>
+  <Step title="Resident can now log in">
+    The newly approved resident can immediately authenticate using the credentials they chose at registration. Their default role is `cliente`.
+  </Step>
+</Steps>
+
+To reject a request, the admin clicks **Rechazar**, confirms the prompt, and `rejectUser(username)` removes the pending record.
+
+---
+
+## Soft-Delete Policy
+
+Users in SIMAP are **never physically removed** from the database. Instead, the `estado` field is set to `'eliminado'`, which hides the account from all queries:
+
+```js
+// In AdminPage.jsx handleDelete()
+user.estado = 'eliminado';
+await db.registeredUsers.put(user);
+
+// Audit trail written immediately
+await db.auditoria.add({
+  timestamp:   new Date().toISOString(),
+  accion:      'SOFT_DELETE',
+  user_id:     'admin_global',
+  afectado_id: username
+});
+```
+
+The live query filters out eliminated accounts:
+
+```js
+const users = await db.registeredUsers.toArray();
+return users.filter(u => u.estado !== 'eliminado');
+```
+
+This ensures financial history tied to that user (payments, jornales, commissions) remains intact and auditable, satisfying MINSA transparency requirements.
+
+---
+
+## The `auditoria` Table
+
+Every critical action in the system writes an immutable entry to `db.auditoria`:
+
+| Field | Type | Description |
+|---|---|---|
+| `timestamp` | ISO string | Exact date and time of the action |
+| `accion` | string | Action identifier (e.g., `SOFT_DELETE`, `APPROVE`, `REJECT`, `ROLE_CHANGE`) |
+| `user_id` | string | The username of whoever performed the action |
+| `afectado_id` | string | The username of the user who was affected |
+| `detalles` | string? | Optional additional context |
+
+Entries are displayed newest-first and cannot be edited or deleted from the UI. This table is the primary evidence trail for any MINSA or internal compliance review.
+
+---
+
+## The `dev` Role
+
+<Warning>
+The `dev` role exists to allow technical support staff to investigate system issues **without accessing sensitive financial or residential data**. Users logged in as `dev` can only see the **Logs de Auditoría** tab. The **Pendientes** and **Usuarios Activos** tabs are hidden entirely from the DOM — not just disabled. `dev` accounts cannot view payment records, balances, resident personal information, or generate reports.
+</Warning>
+
+The dev credential is defined in `src/utils/constants.js`:
+
+```js
+{ user: 'dev', pass: 'admin123', rol: 'dev', nombre: 'Soporte Técnico', estado: 'activo' }
+```
+
+This separation means a developer helping debug a sync issue can read audit logs to trace what happened without ever seeing a resident's payment history or personal details.
